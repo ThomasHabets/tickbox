@@ -1,15 +1,16 @@
-use std::io::BufReader;
-use std::sync::mpsc::TryRecvError;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TryRecvError;
 
 use anyhow::Result;
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
+use tokio::task;
 
 use crossterm::event::{KeyCode, KeyEventKind};
 
 fn render(frame: &mut ratatui::Frame, out: &str) {
     use ratatui::layout::Constraint::Fill;
     use ratatui::layout::Layout;
-    use ratatui::style::{Color, Style};
-    use ratatui::text::{Line, Span};
     use ratatui::widgets::{Block, Paragraph};
 
     let [top, bottom] = Layout::vertical([Fill(1); 2]).areas(frame.area());
@@ -63,7 +64,55 @@ enum Step {
     Pending(Task),
 }
 
-fn run_ui(rx: std::sync::mpsc::Receiver<String>) -> Result<()> {
+fn ansi_to_spans(ansi_str: &str) -> Vec<Span> {
+    use ansi_parser::{AnsiParser, AnsiSequence, Output};
+    let parsed = ansi_str.ansi_parse();
+    let mut style = Style::default();
+    let mut out = Vec::new();
+    for fragment in parsed {
+        match fragment {
+            Output::TextBlock(txt) => out.push(Span::styled(txt, style)),
+            Output::Escape(AnsiSequence::SetGraphicsMode(params)) => {
+                for param in params {
+                    style = match param {
+                        0 => Style::default(),
+                        1 => style.add_modifier(ratatui::style::Modifier::BOLD),
+                        30 => style.fg(Color::Black),
+                        31 => style.fg(Color::Red),
+                        32 => style.fg(Color::Green),
+                        33 => style.fg(Color::Yellow),
+                        34 => style.fg(Color::Blue),
+                        35 => style.fg(Color::Magenta),
+                        36 => style.fg(Color::Cyan),
+                        37 => style.fg(Color::White),
+                        38 => style.fg(Color::Reset),
+                        _ => style,
+                    };
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+/*
+fn ansi_color_to_ratatui(color: nu_ansi_term::Color) -> Color {
+    match color {
+        nu_ansi_term::Color::Black => Color::Black,
+        nu_ansi_term::Color::Red => Color::Red,
+        nu_ansi_term::Color::Green => Color::Green,
+        nu_ansi_term::Color::Yellow => Color::Yellow,
+        nu_ansi_term::Color::Blue => Color::Blue,
+        nu_ansi_term::Color::Magenta => Color::Magenta,
+        nu_ansi_term::Color::Cyan => Color::Cyan,
+        nu_ansi_term::Color::White => Color::White,
+        nu_ansi_term::Color::Fixed(i) => Color::Indexed(i),
+        nu_ansi_term::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+        _ => panic!()
+    }
+}
+*/
+async fn run_ui(mut rx: mpsc::Receiver<String>) -> Result<()> {
     let mut terminal = ratatui::init();
     let mut out = String::new();
     'outer: loop {
@@ -98,61 +147,65 @@ fn run_ui(rx: std::sync::mpsc::Receiver<String>) -> Result<()> {
     Ok(())
 }
 
-fn run_command(task: &Task, tx: std::sync::mpsc::Sender<String>) -> Result<()> {
-    let mut cmd = std::process::Command::new("bash")
+async fn run_command(task: &Task, intx: mpsc::Sender<String>) -> Result<()> {
+    use tokio::io::AsyncBufReadExt;
+    use tokio::io::BufReader;
+    let mut cmd = tokio::process::Command::new("bash")
         .arg("-c")
         .arg(task.cmd.clone())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("Failed to execute");
-    std::thread::scope(|scope| -> Result<()> {
-        let t1 = scope.spawn(|| -> Result<()> {
-            if let Some(stdout) = cmd.stdout.take() {
-                let reader = BufReader::new(stdout);
-                let lines = std::io::BufRead::lines(reader);
-                for line in lines {
-                    tx.send(line?)?;
-                }
+    // TODO: do a select lines read
+    let mut tasks = tokio::task::JoinSet::new();
+    let stdout = cmd.stdout.take().unwrap();
+    let stderr = cmd.stderr.take().unwrap();
+    {
+        let tx = intx.clone();
+        let reader = BufReader::new(stderr);
+        let mut lines = reader.lines();
+        tasks.spawn(async move {
+            while let Ok(Some(line)) = lines.next_line().await {
+                tx.send(line).await.unwrap()
             }
-            Ok(())
         });
-        let t2 = scope.spawn(|| -> Result<()> {
-            if let Some(stderr) = cmd.stderr.take() {
-                let reader = BufReader::new(stderr);
-                let lines = std::io::BufRead::lines(reader);
-                for line in lines {
-                    tx.send(line?)?;
-                }
+    }
+    {
+        let tx = intx.clone();
+        let reader = BufReader::new(stdout);
+        let mut lines = reader.lines();
+        tasks.spawn(async move {
+            while let Ok(Some(line)) = lines.next_line().await {
+                tx.send(line).await.unwrap()
             }
-            Ok(())
         });
-        t1.join().unwrap()?;
-        t2.join().unwrap()
-    })?;
-    cmd.wait()?;
+    }
+    cmd.wait().await?;
+    // TODO: get exit code.
+    tasks.join_all();
+
     // TODO: check for exit code 0
     Ok(())
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     println!("Hello world");
 
     let running = Task {
         name: "test".to_string(),
-        cmd: "echo hello world && echo foo && cd ~/scm/rustradio && cargo test"
+        cmd: "echo -e '\\x1b[1mhello world' >&2 && echo foo && cd ~/scm/rustradio && cargo test --color=always"
             .to_string(),
     };
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::scope(move |scope| {
-        scope.spawn(move || {
-            match run_command(&running, tx.clone()) {
-                Ok(_) => {}
-                Err(e) => {
-                    tx.send(format!("Got an error: {e:?}\n")).unwrap();
-                }
+    let (tx, rx) = mpsc::channel(500);
+    task::spawn(async move {
+        match run_command(&running, tx.clone()).await {
+            Ok(_) => {}
+            Err(e) => {
+                tx.send(format!("Got an error: {e:?}\n")).await.unwrap();
             }
-        });
-        run_ui(rx)
-    })
+        }
+    });
+    run_ui(rx).await
 }

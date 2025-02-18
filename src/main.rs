@@ -6,11 +6,21 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use tokio::task;
 
+use clap::Parser;
 use crossterm::event::{KeyCode, KeyEventKind};
 
-const unchecked: &str = "\u{2610}";
-const checked: &str = "\u{2611}";
-const failed: &str = "\u{2612}";
+const UNCHECKED: &str = "\u{2610}";
+const CHECKED: &str = "\u{2611}";
+const FAILED: &str = "\u{2612}";
+
+#[derive(clap::Parser, Debug)]
+#[command(version, about)]
+struct Opt {
+    #[arg(long)]
+    dir: std::path::PathBuf,
+    #[arg(long)]
+    cwd: std::path::PathBuf,
+}
 
 fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line]) {
     use ratatui::layout::Constraint::Fill;
@@ -50,38 +60,6 @@ enum State {
     Complete,
     Failed,
     Pending,
-}
-
-fn ansi_to_spans(ansi_str: &str) -> Vec<Span> {
-    use ansi_parser::{AnsiParser, AnsiSequence, Output};
-    let parsed = ansi_str.ansi_parse();
-    let mut style = Style::default();
-    let mut out = Vec::new();
-    for fragment in parsed {
-        match fragment {
-            Output::TextBlock(txt) => out.push(Span::styled(txt, style)),
-            Output::Escape(AnsiSequence::SetGraphicsMode(params)) => {
-                for param in params {
-                    style = match param {
-                        0 => Style::default(),
-                        1 => style.add_modifier(ratatui::style::Modifier::BOLD),
-                        30 => style.fg(Color::Black),
-                        31 => style.fg(Color::Red),
-                        32 => style.fg(Color::Green),
-                        33 => style.fg(Color::Yellow),
-                        34 => style.fg(Color::Blue),
-                        35 => style.fg(Color::Magenta),
-                        36 => style.fg(Color::Cyan),
-                        37 => style.fg(Color::White),
-                        38 => style.fg(Color::Reset),
-                        _ => style,
-                    };
-                }
-            }
-            _ => {}
-        }
-    }
-    out
 }
 
 enum UIUpdate {
@@ -164,33 +142,42 @@ async fn run_command(task: &Task, intx: mpsc::Sender<UIUpdate>) -> Result<bool> 
     }
     let success = cmd.wait().await?.success();
     // TODO: get exit code.
-    tasks.join_all();
+    tasks.join_all().await;
 
     Ok(success)
 }
 
+fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
+    let entries = std::fs::read_dir(path)?;
+    let mut tasks = Vec::new();
+    for entry in entries {
+        if let Ok(entry) = entry {
+            if entry.path().display().to_string().ends_with("~") {
+                continue;
+            }
+            // println!("{}", entry.path().display());
+            tasks.push(Task {
+                name: entry
+                    .path()
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+                //cmd: path.join(entry.path()).as_path().display().to_string(),
+                cmd: entry.path().display().to_string(),
+                state: State::Pending,
+            });
+        }
+    }
+    Ok(tasks)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!("Hello world");
-
-    let mut steps = [
-        Task {
-            name: "test".to_string(),
-            cmd: "echo -e '\\x1b[1mhello world\\x1b[0m' >&2 && echo foo && cd ~/scm/rustradio && echo cargo test --color=always"
-                .to_string(),
-            state: State::Pending,
-        },
-        Task {
-            name: "false".to_string(),
-            cmd: "false".to_string(),
-            state: State::Pending,
-        },
-        Task {
-            name: "Foo".to_string(),
-            cmd: "echo third step".to_string(),
-            state: State::Pending,
-        },
-    ];
+    let opt = Opt::parse();
+    let mut steps = load_tasks(&opt.dir)?;
+    std::env::set_current_dir(&opt.cwd)?;
     let (tx, rx) = mpsc::channel(500);
     task::spawn(async move {
         for (n, s) in steps.clone().iter_mut().enumerate() {
@@ -201,6 +188,8 @@ async fn main() -> Result<()> {
                 }
                 Ok(false) => {
                     steps[n].state = State::Failed;
+                    tx.send(make_status_update(&steps)).await.unwrap();
+                    break;
                 }
                 Err(e) => {
                     tx.send(UIUpdate::AddLine(format!("Got an error: {e:?}\n")))
@@ -208,6 +197,7 @@ async fn main() -> Result<()> {
                         .unwrap();
                 }
             }
+            tx.send(make_status_update(&steps)).await.unwrap();
         }
     });
 
@@ -219,9 +209,9 @@ fn make_status_update(steps: &[Task]) -> UIUpdate {
         .iter()
         .map(|s| {
             let (pre, color) = match s.state {
-                State::Complete => (checked, Color::Green),
-                State::Failed => (failed, Color::Red),
-                State::Pending => (unchecked, Color::Yellow),
+                State::Complete => (CHECKED, Color::Green),
+                State::Failed => (FAILED, Color::Red),
+                State::Pending => (UNCHECKED, Color::Yellow),
             };
             Line::from(vec![Span::styled(
                 format!("{pre} {}", s.name),

@@ -59,6 +59,7 @@ struct Task {
 enum State {
     Complete,
     Failed,
+    Running,
     Pending,
 }
 
@@ -92,6 +93,7 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
                 crossterm::event::Event::Key(key) if key.kind == KeyEventKind::Press => {
                     match key.code {
                         KeyCode::Char('q') => break,
+                        KeyCode::Char('Q') => break,
                         _ => {}
                     }
                 }
@@ -150,26 +152,23 @@ async fn run_command(task: &Task, intx: mpsc::Sender<UIUpdate>) -> Result<bool> 
 fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
     let entries = std::fs::read_dir(path)?;
     let mut tasks = Vec::new();
-    for entry in entries {
-        if let Ok(entry) = entry {
-            if entry.path().display().to_string().ends_with("~") {
-                continue;
-            }
-            // println!("{}", entry.path().display());
-            tasks.push(Task {
-                name: entry
-                    .path()
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .to_string(),
-                //cmd: path.join(entry.path()).as_path().display().to_string(),
-                cmd: entry.path().display().to_string(),
-                state: State::Pending,
-            });
+    for entry in entries.flatten() {
+        if entry.path().display().to_string().ends_with("~") {
+            continue;
         }
+        tasks.push(Task {
+            name: entry
+                .path()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string(),
+            cmd: entry.path().display().to_string(),
+            state: State::Pending,
+        });
     }
+    tasks.sort_by(|a, b| a.cmd.cmp(&b.cmd));
     Ok(tasks)
 }
 
@@ -181,8 +180,9 @@ async fn main() -> Result<()> {
     let (tx, rx) = mpsc::channel(500);
     task::spawn(async move {
         for (n, s) in steps.clone().iter_mut().enumerate() {
+            steps[n].state = State::Running;
             tx.send(make_status_update(&steps)).await.unwrap();
-            match run_command(&s, tx.clone()).await {
+            match run_command(s, tx.clone()).await {
                 Ok(true) => {
                     steps[n].state = State::Complete;
                 }
@@ -209,6 +209,7 @@ fn make_status_update(steps: &[Task]) -> UIUpdate {
         .iter()
         .map(|s| {
             let (pre, color) = match s.state {
+                State::Running => (UNCHECKED, Color::Blue),
                 State::Complete => (CHECKED, Color::Green),
                 State::Failed => (FAILED, Color::Red),
                 State::Pending => (UNCHECKED, Color::Yellow),

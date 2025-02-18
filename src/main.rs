@@ -8,34 +8,19 @@ use tokio::task;
 
 use crossterm::event::{KeyCode, KeyEventKind};
 
-fn render(frame: &mut ratatui::Frame, out: &str) {
+const unchecked: &str = "\u{2610}";
+const checked: &str = "\u{2611}";
+const failed: &str = "\u{2612}";
+
+fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line]) {
     use ratatui::layout::Constraint::Fill;
     use ratatui::layout::Layout;
     use ratatui::widgets::{Block, Paragraph};
 
     let [top, bottom] = Layout::vertical([Fill(1); 2]).areas(frame.area());
 
-    let unchecked = "\u{2610}";
-    let checked = "\u{2611}";
-    let failed = "\u{2612}";
-
-    let text = vec![
-        Line::from(vec![Span::styled(
-            format!("{checked} Step 1"),
-            Style::default().fg(Color::Green),
-        )]),
-        Line::from(vec![Span::styled(
-            format!("{failed} Step 2"),
-            Style::default().fg(Color::Red),
-        )]),
-        Line::from(vec![Span::styled(
-            format!("{unchecked} Step 3"),
-            Style::default(),
-        )]),
-    ];
-
     frame.render_widget(
-        Paragraph::new(text).block(Block::bordered().title("Workflow")),
+        Paragraph::new(status.to_owned()).block(Block::bordered().title("Workflow")),
         top,
     );
 
@@ -54,14 +39,17 @@ fn render(frame: &mut ratatui::Frame, out: &str) {
     );
 }
 
+#[derive(Clone)]
 struct Task {
     name: String,
     cmd: String,
+    state: State,
 }
-enum Step {
-    Complete(Task),
-    Failed(Task),
-    Pending(Task),
+#[derive(Clone)]
+enum State {
+    Complete,
+    Failed,
+    Pending,
 }
 
 fn ansi_to_spans(ansi_str: &str) -> Vec<Span> {
@@ -95,38 +83,31 @@ fn ansi_to_spans(ansi_str: &str) -> Vec<Span> {
     }
     out
 }
-/*
-fn ansi_color_to_ratatui(color: nu_ansi_term::Color) -> Color {
-    match color {
-        nu_ansi_term::Color::Black => Color::Black,
-        nu_ansi_term::Color::Red => Color::Red,
-        nu_ansi_term::Color::Green => Color::Green,
-        nu_ansi_term::Color::Yellow => Color::Yellow,
-        nu_ansi_term::Color::Blue => Color::Blue,
-        nu_ansi_term::Color::Magenta => Color::Magenta,
-        nu_ansi_term::Color::Cyan => Color::Cyan,
-        nu_ansi_term::Color::White => Color::White,
-        nu_ansi_term::Color::Fixed(i) => Color::Indexed(i),
-        nu_ansi_term::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
-        _ => panic!()
-    }
+
+enum UIUpdate {
+    Status(Vec<Line<'static>>),
+    AddLine(String),
 }
-*/
-async fn run_ui(mut rx: mpsc::Receiver<String>) -> Result<()> {
+
+async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
     let mut terminal = ratatui::init();
     let mut out = String::new();
+    let mut status = Vec::new();
     'outer: loop {
         loop {
             match rx.try_recv() {
-                Ok(line) => {
+                Ok(UIUpdate::AddLine(line)) => {
                     out += &line;
                     out += "\n";
+                }
+                Ok(UIUpdate::Status(st)) => {
+                    status = st;
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break 'outer,
             }
         }
-        terminal.draw(|frame| render(frame, &out))?;
+        terminal.draw(|frame| render(frame, &out, &status))?;
         // Handle input.
         if crossterm::event::poll(std::time::Duration::from_millis(50)).unwrap() {
             match crossterm::event::read().unwrap() {
@@ -141,13 +122,13 @@ async fn run_ui(mut rx: mpsc::Receiver<String>) -> Result<()> {
         }
     }
     out += "\n========DONE==========";
-    terminal.draw(|frame| render(frame, &out)).unwrap();
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    terminal.draw(|frame| render(frame, &out, &status)).unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(5));
     ratatui::restore();
     Ok(())
 }
 
-async fn run_command(task: &Task, intx: mpsc::Sender<String>) -> Result<()> {
+async fn run_command(task: &Task, intx: mpsc::Sender<UIUpdate>) -> Result<bool> {
     use tokio::io::AsyncBufReadExt;
     use tokio::io::BufReader;
     let mut cmd = tokio::process::Command::new("bash")
@@ -167,7 +148,7 @@ async fn run_command(task: &Task, intx: mpsc::Sender<String>) -> Result<()> {
         let mut lines = reader.lines();
         tasks.spawn(async move {
             while let Ok(Some(line)) = lines.next_line().await {
-                tx.send(line).await.unwrap()
+                tx.send(UIUpdate::AddLine(line)).await.unwrap()
             }
         });
     }
@@ -177,35 +158,88 @@ async fn run_command(task: &Task, intx: mpsc::Sender<String>) -> Result<()> {
         let mut lines = reader.lines();
         tasks.spawn(async move {
             while let Ok(Some(line)) = lines.next_line().await {
-                tx.send(line).await.unwrap()
+                tx.send(UIUpdate::AddLine(line)).await.unwrap()
             }
         });
     }
-    cmd.wait().await?;
+    let success = cmd.wait().await?.success();
     // TODO: get exit code.
     tasks.join_all();
 
-    // TODO: check for exit code 0
-    Ok(())
+    Ok(success)
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     println!("Hello world");
 
-    let running = Task {
-        name: "test".to_string(),
-        cmd: "echo -e '\\x1b[1mhello world' >&2 && echo foo && cd ~/scm/rustradio && cargo test --color=always"
-            .to_string(),
-    };
+    let mut steps = [
+        Task {
+            name: "test".to_string(),
+            cmd: "echo -e '\\x1b[1mhello world\\x1b[0m' >&2 && echo foo && cd ~/scm/rustradio && echo cargo test --color=always"
+                .to_string(),
+            state: State::Pending,
+        },
+        Task {
+            name: "false".to_string(),
+            cmd: "false".to_string(),
+            state: State::Pending,
+        },
+        Task {
+            name: "Foo".to_string(),
+            cmd: "echo third step".to_string(),
+            state: State::Pending,
+        },
+    ];
     let (tx, rx) = mpsc::channel(500);
     task::spawn(async move {
-        match run_command(&running, tx.clone()).await {
-            Ok(_) => {}
-            Err(e) => {
-                tx.send(format!("Got an error: {e:?}\n")).await.unwrap();
+        for (n, s) in steps.clone().iter_mut().enumerate() {
+            tx.send(make_status_update(&steps)).await.unwrap();
+            match run_command(&s, tx.clone()).await {
+                Ok(true) => {
+                    steps[n].state = State::Complete;
+                }
+                Ok(false) => {
+                    steps[n].state = State::Failed;
+                }
+                Err(e) => {
+                    tx.send(UIUpdate::AddLine(format!("Got an error: {e:?}\n")))
+                        .await
+                        .unwrap();
+                }
             }
         }
     });
+
     run_ui(rx).await
+}
+
+fn make_status_update(steps: &[Task]) -> UIUpdate {
+    let lines: Vec<_> = steps
+        .iter()
+        .map(|s| {
+            let (pre, color) = match s.state {
+                State::Complete => (checked, Color::Green),
+                State::Failed => (failed, Color::Red),
+                State::Pending => (unchecked, Color::Yellow),
+            };
+            Line::from(vec![Span::styled(
+                format!("{pre} {}", s.name),
+                Style::default().fg(color),
+            )])
+        })
+        .collect();
+    let owned_lines: Vec<Line> = lines
+        .clone()
+        .into_iter()
+        .map(|line| {
+            Line::from(
+                line.spans
+                    .into_iter()
+                    .map(|span| Span::styled(span.content.to_string(), span.style))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    UIUpdate::Status(owned_lines)
 }

@@ -108,12 +108,17 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
     Ok(())
 }
 
-async fn run_command(task: &Task, intx: mpsc::Sender<UIUpdate>) -> Result<bool> {
+async fn run_command(
+    task: &Task,
+    tmpdir: &std::path::Path,
+    intx: mpsc::Sender<UIUpdate>,
+) -> Result<bool> {
     use tokio::io::AsyncBufReadExt;
     use tokio::io::BufReader;
     let mut cmd = tokio::process::Command::new("bash")
         .arg("-c")
         .arg(task.cmd.clone())
+        .env("TICKBOX_TEMPDIR", tmpdir.as_os_str())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -175,6 +180,7 @@ fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let opt = Opt::parse();
+    let temp_dir = tempfile::TempDir::new()?;
     let mut steps = load_tasks(&opt.dir)?;
     std::env::set_current_dir(&opt.cwd)?;
     let (tx, rx) = mpsc::channel(500);
@@ -183,7 +189,7 @@ async fn main() -> Result<()> {
         for (n, s) in steps.clone().iter_mut().enumerate() {
             steps[n].state = State::Running;
             tx.send(make_status_update(&steps)).await.unwrap();
-            match run_command(s, tx.clone()).await {
+            match run_command(s, temp_dir.path(), tx.clone()).await {
                 Ok(true) => {
                     steps[n].state = State::Complete;
                 }

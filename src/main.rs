@@ -110,6 +110,7 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
 
 async fn run_command(
     task: &Task,
+    cwd: &std::path::Path,
     tmpdir: &std::path::Path,
     intx: mpsc::Sender<UIUpdate>,
 ) -> Result<bool> {
@@ -119,6 +120,7 @@ async fn run_command(
         .arg("-c")
         .arg(task.cmd.clone())
         .env("TICKBOX_TEMPDIR", tmpdir.as_os_str())
+        .env("TICKBOX_CWD", cwd.as_os_str())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -183,13 +185,14 @@ async fn main() -> Result<()> {
     let temp_dir = tempfile::TempDir::new()?;
     let mut steps = load_tasks(&opt.dir)?;
     std::env::set_current_dir(&opt.cwd)?;
+    let cwd = std::env::current_dir()?;
     let (tx, rx) = mpsc::channel(500);
     let runner = task::spawn(async move {
         let mut success = true;
         for (n, s) in steps.clone().iter_mut().enumerate() {
             steps[n].state = State::Running;
             tx.send(make_status_update(&steps)).await.unwrap();
-            match run_command(s, temp_dir.path(), tx.clone()).await {
+            match run_command(s, &cwd, temp_dir.path(), tx.clone()).await {
                 Ok(true) => {
                     steps[n].state = State::Complete;
                 }

@@ -168,7 +168,9 @@ async fn run_command(
 }
 
 fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
-    let entries = std::fs::read_dir(path)?;
+    let entries = std::fs::read_dir(path).map_err(|e| {
+        anyhow::Error::msg(format!("Failed to read directory {}: {e}", path.display()))
+    })?;
     let mut tasks = Vec::new();
     for entry in entries.flatten() {
         if entry.path().display().to_string().ends_with("~") {

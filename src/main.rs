@@ -66,6 +66,7 @@ enum State {
 }
 
 enum UIUpdate {
+    Wait,
     Status(Vec<Line<'static>>),
     AddLine(String),
 }
@@ -74,9 +75,13 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
     let mut terminal = ratatui::init();
     let mut out = String::new();
     let mut status = Vec::new();
+    let mut do_wait = false;
     'outer: loop {
         loop {
             match rx.try_recv() {
+                Ok(UIUpdate::Wait) => {
+                    do_wait = true;
+                }
                 Ok(UIUpdate::AddLine(line)) => {
                     out += &line;
                     out += "\n";
@@ -85,7 +90,13 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
                     status = st;
                 }
                 Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => break 'outer,
+                Err(TryRecvError::Disconnected) => {
+                    if do_wait {
+                        break;
+                    } else {
+                        break 'outer;
+                    }
+                }
             }
         }
         terminal.draw(|frame| render(frame, &out, &status))?;
@@ -105,7 +116,6 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
     }
     out += "\n========DONE==========";
     terminal.draw(|frame| render(frame, &out, &status)).unwrap();
-    std::thread::sleep(std::time::Duration::from_secs(5));
     ratatui::restore();
     Ok(())
 }
@@ -232,6 +242,7 @@ async fn main() -> Result<()> {
                     steps[n].state = State::Complete;
                 }
                 Ok(false) => {
+                    tx.send(UIUpdate::Wait).await.unwrap();
                     success = false;
                     steps[n].state = State::Failed;
                     tx.send(make_status_update(&steps)).await.unwrap();
@@ -249,7 +260,7 @@ async fn main() -> Result<()> {
     });
 
     run_ui(rx).await?;
-    if runner.await? == false {
+    if !runner.await? {
         std::process::exit(1);
     }
     Ok(())

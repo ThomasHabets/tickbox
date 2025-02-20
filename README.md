@@ -2,6 +2,9 @@
 
 A simple workflow executor, for presubmits and similar things.
 
+See a simple demo here:
+https://asciinema.org/a/K5pMpnGGEuCLn8c6E3PeliCXR
+
 ## Not yet implemented
 
 * Color output without rendering errors.

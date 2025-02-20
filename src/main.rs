@@ -131,10 +131,7 @@ async fn run_command(
     let mut cmd = tokio::process::Command::new("bash")
         .arg("-c")
         .arg(task.cmd.clone())
-        .envs(
-            envs.into_iter()
-                .map(|(k, v)| (k.as_os_str(), v.as_os_str())),
-        )
+        .envs(envs.iter().map(|(k, v)| (k.as_os_str(), v.as_os_str())))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()

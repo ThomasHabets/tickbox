@@ -166,6 +166,16 @@ fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
         if entry.path().display().to_string().ends_with("~") {
             continue;
         }
+        if entry
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with(".")
+        {
+            continue;
+        }
         tasks.push(Task {
             name: entry
                 .path()

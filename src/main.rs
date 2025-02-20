@@ -1,3 +1,5 @@
+use std::ffi::OsString;
+
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 
@@ -110,8 +112,7 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
 
 async fn run_command(
     task: &Task,
-    cwd: &std::path::Path,
-    tmpdir: &std::path::Path,
+    envs: &[(OsString, OsString)],
     intx: mpsc::Sender<UIUpdate>,
 ) -> Result<bool> {
     use tokio::io::AsyncBufReadExt;
@@ -119,8 +120,10 @@ async fn run_command(
     let mut cmd = tokio::process::Command::new("bash")
         .arg("-c")
         .arg(task.cmd.clone())
-        .env("TICKBOX_TEMPDIR", tmpdir.as_os_str())
-        .env("TICKBOX_CWD", cwd.as_os_str())
+        .envs(
+            envs.into_iter()
+                .map(|(k, v)| (k.as_os_str(), v.as_os_str())),
+        )
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -182,17 +185,39 @@ fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let opt = Opt::parse();
-    let temp_dir = tempfile::TempDir::new()?;
     let mut steps = load_tasks(&opt.dir)?;
     std::env::set_current_dir(&opt.cwd)?;
     let cwd = std::env::current_dir()?;
+    let tmp_dir = tempfile::TempDir::new()?;
+    let mut envs: Vec<(OsString, OsString)> = vec![
+        ("TICKBOX_TEMPDIR".into(), tmp_dir.path().into()),
+        ("TICKBOX_CWD".into(), cwd.to_str().unwrap().into()),
+    ];
+    {
+        let gitdir = cwd.join(".git");
+        if gitdir.exists() && gitdir.is_dir() {
+            let out = tokio::process::Command::new("git")
+                .arg("branch")
+                .arg("--show-current")
+                .output()
+                .await?;
+            if !out.status.success() {
+                return Err(anyhow::Error::msg("git branch exec failed"));
+            }
+            use std::os::unix::ffi::OsStringExt;
+            envs.push((
+                "TICKBOX_BRANCH".into(),
+                OsString::from_vec(out.stderr.clone()),
+            ));
+        }
+    }
     let (tx, rx) = mpsc::channel(500);
     let runner = task::spawn(async move {
         let mut success = true;
         for (n, s) in steps.clone().iter_mut().enumerate() {
             steps[n].state = State::Running;
             tx.send(make_status_update(&steps)).await.unwrap();
-            match run_command(s, &cwd, temp_dir.path(), tx.clone()).await {
+            match run_command(s, &envs, tx.clone()).await {
                 Ok(true) => {
                     steps[n].state = State::Complete;
                 }

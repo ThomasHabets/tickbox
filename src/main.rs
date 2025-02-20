@@ -178,7 +178,8 @@ async fn main() -> Result<()> {
     let mut steps = load_tasks(&opt.dir)?;
     std::env::set_current_dir(&opt.cwd)?;
     let (tx, rx) = mpsc::channel(500);
-    task::spawn(async move {
+    let runner = task::spawn(async move {
+        let mut success = true;
         for (n, s) in steps.clone().iter_mut().enumerate() {
             steps[n].state = State::Running;
             tx.send(make_status_update(&steps)).await.unwrap();
@@ -187,6 +188,7 @@ async fn main() -> Result<()> {
                     steps[n].state = State::Complete;
                 }
                 Ok(false) => {
+                    success = false;
                     steps[n].state = State::Failed;
                     tx.send(make_status_update(&steps)).await.unwrap();
                     break;
@@ -199,9 +201,14 @@ async fn main() -> Result<()> {
             }
             tx.send(make_status_update(&steps)).await.unwrap();
         }
+        success
     });
 
-    run_ui(rx).await
+    run_ui(rx).await?;
+    if runner.await? == false {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 fn make_status_update(steps: &[Task]) -> UIUpdate {

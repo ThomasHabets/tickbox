@@ -39,7 +39,8 @@ fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line]) {
     let out = out
         .lines()
         .rev()
-        .take((bottom.height - 5).into())
+        // Subtract top and bottom border.
+        .take((bottom.height - 2).into())
         .collect::<Vec<_>>()
         .into_iter()
         .rev()

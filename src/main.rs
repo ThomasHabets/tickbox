@@ -18,7 +18,7 @@ const FAILED: &str = "\u{2612}";
 struct Opt {
     #[arg(long)]
     dir: std::path::PathBuf,
-    #[arg(long)]
+    #[arg(long, default_value = ".")]
     cwd: std::path::PathBuf,
 }
 

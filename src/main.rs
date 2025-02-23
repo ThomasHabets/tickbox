@@ -22,6 +22,9 @@ struct Opt {
     dir: std::path::PathBuf,
     #[arg(long, default_value = ".")]
     cwd: std::path::PathBuf,
+
+    #[arg(long)]
+    wait: bool,
 }
 
 fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line]) {
@@ -307,6 +310,9 @@ async fn main() -> Result<()> {
         }
     }
     let (tx, rx) = mpsc::channel(500);
+    if opt.wait {
+        tx.send(UIUpdate::Wait).await.unwrap();
+    }
     let runner = task::spawn(async move {
         let mut success = true;
         for (n, s) in steps.clone().iter_mut().enumerate() {

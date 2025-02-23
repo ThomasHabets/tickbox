@@ -23,6 +23,9 @@ struct Opt {
     #[arg(long, default_value = ".")]
     cwd: std::path::PathBuf,
 
+    #[arg(long, default_value = ".*")]
+    matching: regex::Regex,
+
     #[arg(long)]
     wait: bool,
 }
@@ -67,6 +70,7 @@ enum State {
     Failed,
     Running,
     Pending,
+    Skipped,
 }
 
 enum UIUpdate {
@@ -163,11 +167,26 @@ async fn run_command(
             }
         });
     }
-    let success = cmd.wait().await?.success();
+    let status = cmd.wait().await?;
     // TODO: get exit code.
     tasks.join_all().await;
+    intx.send(UIUpdate::AddLine("".to_string())).await.unwrap();
+    use std::os::unix::process::ExitStatusExt;
+    if let Some(code) = status.code() {
+        intx.send(UIUpdate::AddLine(format!(
+            "==> Command exited with code {code}"
+        )))
+        .await
+        .unwrap();
+    } else if let Some(sig) = status.signal() {
+        intx.send(UIUpdate::AddLine(format!(
+            "==> Command exited with signal {sig} "
+        )))
+        .await
+        .unwrap();
+    }
 
-    Ok(success)
+    Ok(status.success())
 }
 
 fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
@@ -217,6 +236,7 @@ fn make_status_update(steps: &[Task]) -> UIUpdate {
                 State::Complete => (CHECKED, Color::Green),
                 State::Failed => (FAILED, Color::Red),
                 State::Pending => (UNCHECKED, Color::Yellow),
+                State::Skipped => (UNCHECKED, Color::Gray),
             };
             Line::from(vec![Span::styled(
                 format!("{pre} {}", s.name),
@@ -316,8 +336,14 @@ async fn main() -> Result<()> {
     let runner = task::spawn(async move {
         let mut success = true;
         for (n, s) in steps.clone().iter_mut().enumerate() {
+            if !opt.matching.is_match(&steps[n].cmd) {
+                steps[n].state = State::Skipped;
+                tx.send(make_status_update(&steps)).await.unwrap();
+                continue;
+            }
             steps[n].state = State::Running;
             tx.send(make_status_update(&steps)).await.unwrap();
+
             match run_command(s, &conf.envs, tx.clone()).await {
                 Ok(true) => {
                     steps[n].state = State::Complete;

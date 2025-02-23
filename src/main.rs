@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 
-use anyhow::Result;
+use anyhow::{Error, Result};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use tokio::task;
@@ -168,12 +168,15 @@ async fn run_command(
 }
 
 fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
-    let entries = std::fs::read_dir(path).map_err(|e| {
-        anyhow::Error::msg(format!("Failed to read directory {}: {e}", path.display()))
-    })?;
+    let entries = std::fs::read_dir(path)
+        .map_err(|e| Error::msg(format!("Failed to read directory {}: {e}", path.display())))?;
     let mut tasks = Vec::new();
     for entry in entries.flatten() {
-        if entry.path().display().to_string().ends_with("~") {
+        let filename = entry.path().display().to_string();
+        if filename.ends_with("~") {
+            continue;
+        }
+        if filename.ends_with(".conf") {
             continue;
         }
         if entry
@@ -200,70 +203,6 @@ fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
     }
     tasks.sort_by(|a, b| a.cmd.cmp(&b.cmd));
     Ok(tasks)
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let opt = Opt::parse();
-    let mut steps = load_tasks(&opt.dir)?;
-    std::env::set_current_dir(&opt.cwd)?;
-    let cwd = std::env::current_dir()?;
-    let tmp_dir = tempfile::TempDir::new()?;
-    let mut envs: Vec<(OsString, OsString)> = vec![
-        ("TICKBOX_TEMPDIR".into(), tmp_dir.path().into()),
-        ("TICKBOX_CWD".into(), cwd.to_str().unwrap().into()),
-    ];
-    {
-        let gitdir = cwd.join(".git");
-        if gitdir.exists() && gitdir.is_dir() {
-            let out = tokio::process::Command::new("git")
-                .arg("branch")
-                .arg("--show-current")
-                .output()
-                .await?;
-            if !out.status.success() {
-                return Err(anyhow::Error::msg("git branch exec failed"));
-            }
-            use std::os::unix::ffi::OsStringExt;
-            envs.push((
-                "TICKBOX_BRANCH".into(),
-                OsString::from_vec(out.stderr.clone()),
-            ));
-        }
-    }
-    let (tx, rx) = mpsc::channel(500);
-    let runner = task::spawn(async move {
-        let mut success = true;
-        for (n, s) in steps.clone().iter_mut().enumerate() {
-            steps[n].state = State::Running;
-            tx.send(make_status_update(&steps)).await.unwrap();
-            match run_command(s, &envs, tx.clone()).await {
-                Ok(true) => {
-                    steps[n].state = State::Complete;
-                }
-                Ok(false) => {
-                    tx.send(UIUpdate::Wait).await.unwrap();
-                    success = false;
-                    steps[n].state = State::Failed;
-                    tx.send(make_status_update(&steps)).await.unwrap();
-                    break;
-                }
-                Err(e) => {
-                    tx.send(UIUpdate::AddLine(format!("Got an error: {e:?}\n")))
-                        .await
-                        .unwrap();
-                }
-            }
-            tx.send(make_status_update(&steps)).await.unwrap();
-        }
-        success
-    });
-
-    run_ui(rx).await?;
-    if !runner.await? {
-        std::process::exit(1);
-    }
-    Ok(())
 }
 
 fn make_status_update(steps: &[Task]) -> UIUpdate {
@@ -295,4 +234,109 @@ fn make_status_update(steps: &[Task]) -> UIUpdate {
         })
         .collect();
     UIUpdate::Status(owned_lines)
+}
+
+#[derive(Default)]
+struct Config {
+    envs: Vec<(OsString, OsString)>,
+}
+
+fn load_config(dir: &std::path::Path) -> Result<Config> {
+    let filename = dir.join("tickbox.conf");
+    let contents = match std::fs::read_to_string(&filename) {
+        Ok(data) => data,
+        Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Config::default());
+        }
+        Err(e) => {
+            panic!("Error reading {}: {}", filename.display(), e);
+        }
+    };
+    let mut config = Config::default();
+    for (n, line) in contents.lines().enumerate() {
+        let n = n + 1;
+        let parts = line.splitn(2, ' ').collect::<Vec<_>>();
+        if parts.len() < 2 {
+            return Err(Error::msg(format!("invalid config line {n}: {line}")));
+        }
+        match parts[0] {
+            "#" => continue,
+            "env" => {
+                let parts = line.splitn(2, ' ').collect::<Vec<_>>();
+                if parts.len() != 2 {
+                    return Err(Error::msg(format!("invalid config line {n}: {line}")));
+                }
+                config.envs.push((parts[0].into(), parts[1].into()));
+            }
+            _ => {
+                return Err(Error::msg(format!("invalid config line {n}: {line}")));
+            }
+        }
+    }
+    Ok(config)
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let opt = Opt::parse();
+    let mut conf = load_config(&opt.dir)?;
+    let mut steps = load_tasks(&opt.dir)?;
+    std::env::set_current_dir(&opt.cwd)?;
+    let cwd = std::env::current_dir()?;
+    let tmp_dir = tempfile::TempDir::new()?;
+    conf.envs.extend(vec![
+        ("TICKBOX_TEMPDIR".into(), tmp_dir.path().into()),
+        ("TICKBOX_CWD".into(), cwd.to_str().unwrap().into()),
+    ]);
+    {
+        let gitdir = cwd.join(".git");
+        if gitdir.exists() && gitdir.is_dir() {
+            let out = tokio::process::Command::new("git")
+                .arg("branch")
+                .arg("--show-current")
+                .output()
+                .await?;
+            if !out.status.success() {
+                return Err(Error::msg("git branch exec failed"));
+            }
+            use std::os::unix::ffi::OsStringExt;
+            conf.envs.push((
+                "TICKBOX_BRANCH".into(),
+                OsString::from_vec(out.stderr.clone()),
+            ));
+        }
+    }
+    let (tx, rx) = mpsc::channel(500);
+    let runner = task::spawn(async move {
+        let mut success = true;
+        for (n, s) in steps.clone().iter_mut().enumerate() {
+            steps[n].state = State::Running;
+            tx.send(make_status_update(&steps)).await.unwrap();
+            match run_command(s, &conf.envs, tx.clone()).await {
+                Ok(true) => {
+                    steps[n].state = State::Complete;
+                }
+                Ok(false) => {
+                    tx.send(UIUpdate::Wait).await.unwrap();
+                    success = false;
+                    steps[n].state = State::Failed;
+                    tx.send(make_status_update(&steps)).await.unwrap();
+                    break;
+                }
+                Err(e) => {
+                    tx.send(UIUpdate::AddLine(format!("Got an error: {e:?}\n")))
+                        .await
+                        .unwrap();
+                }
+            }
+            tx.send(make_status_update(&steps)).await.unwrap();
+        }
+        success
+    });
+
+    run_ui(rx).await?;
+    if !runner.await? {
+        std::process::exit(1);
+    }
+    Ok(())
 }

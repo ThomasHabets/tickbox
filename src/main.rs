@@ -190,8 +190,12 @@ async fn run_command(
 }
 
 fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
-    let entries = std::fs::read_dir(path)
-        .map_err(|e| Error::msg(format!("Failed to read directory {}: {e}", path.display())))?;
+    let entries = std::fs::read_dir(path).map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
+            format!("Failed to read directory {}: {e}", path.display()),
+        )
+    })?;
     let mut tasks = Vec::new();
     for entry in entries.flatten() {
         let filename = entry.path().display().to_string();
@@ -272,7 +276,11 @@ fn load_config(dir: &std::path::Path) -> Result<Config> {
             return Ok(Config::default());
         }
         Err(e) => {
-            panic!("Error reading {}: {}", filename.display(), e);
+            return Err(std::io::Error::new(
+                e.kind(),
+                format!("Error reading {}: {}", filename.display(), e),
+            )
+            .into());
         }
     };
     let mut config = Config::default();

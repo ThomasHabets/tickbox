@@ -48,7 +48,8 @@ fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line], scroll: &mut u
         nlines.max(bottom.height as usize) - bottom.height as usize + 2,
     );
 
-    let out = out
+    use ansi_to_tui::IntoText;
+    let out: Vec<Line> = out
         .lines()
         .rev()
         // Subtract top and bottom border.
@@ -57,8 +58,9 @@ fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line], scroll: &mut u
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
-        .collect::<Vec<_>>()
-        .join("\n");
+        .flat_map(|line| line.into_text().unwrap())
+        .collect::<Vec<_>>();
+
     frame.render_widget(
         Paragraph::new(out).block(Block::bordered().title("Command output")),
         bottom,

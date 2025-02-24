@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 ansi-parser = "0.9.1"
+ansi-to-tui = "7.0.0"
 anyhow = "1.0.95"
 clap = { version = "4.5.30", features = ["derive"] }
 crossterm = "0.28.1"

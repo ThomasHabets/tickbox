@@ -380,10 +380,12 @@ async fn main() -> Result<()> {
                     steps[n].state = State::Complete;
                 }
                 Ok(false) => {
-                    tx.send(UIUpdate::Wait).await.unwrap();
+                    // This send() fails if the UI is gone, so nowhere to
+                    // display it anyway.
+                    let _ = tx.send(UIUpdate::Wait).await;
                     success = false;
                     steps[n].state = State::Failed;
-                    tx.send(make_status_update(&steps)).await.unwrap();
+                    let _ = tx.send(make_status_update(&steps)).await;
                     break;
                 }
                 Err(e) => {
@@ -392,7 +394,7 @@ async fn main() -> Result<()> {
                         .unwrap();
                 }
             }
-            tx.send(make_status_update(&steps)).await.unwrap();
+            let _ = tx.send(make_status_update(&steps)).await;
         }
         success
     });

@@ -42,7 +42,7 @@ fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line], scroll: &mut u
         Paragraph::new(status.to_owned()).block(Block::bordered().title("Workflow")),
         top,
     );
-    let nlines = out.lines().into_iter().collect::<Vec<_>>().len();
+    let nlines = out.lines().collect::<Vec<_>>().len();
     *scroll = (*scroll).clamp(
         0,
         nlines.max(bottom.height as usize) - bottom.height as usize + 2,

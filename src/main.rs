@@ -240,6 +240,9 @@ fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
         if filename.ends_with(".conf") {
             continue;
         }
+        if filename.ends_with(".json") {
+            continue;
+        }
         if entry
             .path()
             .file_name()

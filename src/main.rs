@@ -4,6 +4,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 
 use anyhow::{Error, Result};
+use log::trace;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use tokio::task;
@@ -131,7 +132,7 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
 async fn run_command(
     task: &Task,
     envs: &[(OsString, OsString)],
-    intx: mpsc::Sender<UIUpdate>,
+    tx: mpsc::Sender<UIUpdate>,
 ) -> Result<bool> {
     use tokio::io::AsyncBufReadExt;
     use tokio::io::BufReader;
@@ -143,50 +144,67 @@ async fn run_command(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("Failed to execute");
-    // TODO: do a select lines read
-    let mut tasks = tokio::task::JoinSet::new();
     let stdout = cmd.stdout.take().unwrap();
     let stderr = cmd.stderr.take().unwrap();
-    {
-        let tx = intx.clone();
-        let reader = BufReader::new(stderr);
-        let mut lines = reader.lines();
-        tasks.spawn(async move {
-            while let Ok(Some(line)) = lines.next_line().await {
-                tx.send(UIUpdate::AddLine(line)).await.unwrap()
-            }
-        });
-    }
-    {
-        let tx = intx.clone();
-        let reader = BufReader::new(stdout);
-        let mut lines = reader.lines();
-        tasks.spawn(async move {
-            while let Ok(Some(line)) = lines.next_line().await {
-                tx.send(UIUpdate::AddLine(line)).await.unwrap()
-            }
-        });
-    }
-    let status = cmd.wait().await?;
-    // TODO: get exit code.
-    tasks.join_all().await;
-    intx.send(UIUpdate::AddLine("".to_string())).await.unwrap();
-    use std::os::unix::process::ExitStatusExt;
-    if let Some(code) = status.code() {
-        intx.send(UIUpdate::AddLine(format!(
-            "==> Command exited with code {code}"
-        )))
-        .await
-        .unwrap();
-    } else if let Some(sig) = status.signal() {
-        intx.send(UIUpdate::AddLine(format!(
-            "==> Command exited with signal {sig} "
-        )))
-        .await
-        .unwrap();
-    }
+    let rout = BufReader::new(stdout);
+    let mut lout = rout.lines();
+    let rerr = BufReader::new(stderr);
+    let mut lerr = rerr.lines();
 
-    Ok(status.success())
+    let mut out_open = true;
+    let mut err_open = true;
+
+    loop {
+        trace!("Main loop iteration");
+        tokio::select! {
+            line = lerr.next_line(), if err_open => {
+                trace!("Stderr line");
+                match line? {
+                    Some(line) => {
+                        if tx.send(UIUpdate::AddLine(line)).await.is_err() {
+                            cmd.kill().await?;
+                            break;
+                        }
+                    }
+                    None => err_open = false,
+                }
+            }
+            line = lout.next_line(), if out_open => {
+                trace!("Stdout line");
+                match line? {
+                    Some(line) => {
+                        if tx.send(UIUpdate::AddLine(line)).await.is_err() {
+                            cmd.kill().await?;
+                            break;
+                        }
+                    }
+                    None => out_open = false,
+                }
+            }
+
+            status = cmd.wait() => {
+                trace!("Command finished");
+                let status = status?;
+                tx.send(UIUpdate::AddLine("".to_string())).await.unwrap();
+                use std::os::unix::process::ExitStatusExt;
+                if let Some(code) = status.code() {
+                    tx.send(UIUpdate::AddLine(format!(
+                        "==> Command exited with code {code}"
+                    )))
+                    .await
+                    .unwrap();
+                } else if let Some(sig) = status.signal() {
+                    tx.send(UIUpdate::AddLine(format!(
+                        "==> Command exited with signal {sig} "
+                    )))
+                    .await
+                    .unwrap();
+                }
+                return Ok(status.success());
+            },
+        };
+    }
+    Ok(false)
 }
 
 fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
@@ -310,6 +328,11 @@ fn load_config(dir: &std::path::Path) -> Result<Config> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let opt = Opt::parse();
+    simplelog::WriteLogger::init(
+        simplelog::LevelFilter::Info,
+        simplelog::Config::default(),
+        std::fs::File::create("output.log").unwrap(),
+    )?;
     let mut conf = load_config(&opt.dir)?;
     let mut steps = load_tasks(&opt.dir)?;
     std::env::set_current_dir(&opt.cwd)?;

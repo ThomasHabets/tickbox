@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 
 use anyhow::{Error, Result};
-use log::{info, trace};
+use log::trace;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use tokio::task;
@@ -298,13 +298,27 @@ fn make_status_update(steps: &[Task]) -> UIUpdate {
     UIUpdate::Status(owned_lines)
 }
 
-#[derive(Default)]
+#[derive(Default, serde::Deserialize)]
 struct Config {
+    #[serde(deserialize_with = "deserialize_envs")]
     envs: Vec<(OsString, OsString)>,
 }
 
+fn deserialize_envs<'de, D>(deserializer: D) -> Result<Vec<(OsString, OsString)>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    use std::collections::HashMap;
+    let map: HashMap<String, String> = HashMap::deserialize(deserializer)?;
+    Ok(map
+        .into_iter()
+        .map(|(key, value)| (OsString::from(key), OsString::from(value)))
+        .collect())
+}
+
 fn load_config(dir: &std::path::Path) -> Result<Config> {
-    let filename = dir.join("tickbox.conf");
+    let filename = dir.join("tickbox.json");
     let contents = match std::fs::read_to_string(&filename) {
         Ok(data) => data,
         Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -318,29 +332,7 @@ fn load_config(dir: &std::path::Path) -> Result<Config> {
             .into());
         }
     };
-    let mut config = Config::default();
-    for (n, line) in contents.lines().enumerate() {
-        let n = n + 1;
-        let parts = line.splitn(2, ' ').collect::<Vec<_>>();
-        if parts.len() < 2 {
-            return Err(Error::msg(format!("invalid config line {n}: {line}")));
-        }
-        match parts[0] {
-            "#" => continue,
-            "env" => {
-                let parts = parts[1].splitn(2, ' ').collect::<Vec<_>>();
-                if parts.len() != 2 {
-                    return Err(Error::msg(format!("invalid config line {n}: {line}")));
-                }
-                info!("Setting env {} to {}", parts[0], parts[1]);
-                config.envs.push((parts[0].into(), parts[1].into()));
-            }
-            _ => {
-                return Err(Error::msg(format!("invalid config line {n}: {line}")));
-            }
-        }
-    }
-    Ok(config)
+    serde_json::from_str(&contents).map_err(|e| Error::msg(format!("JSON parse: {e}")))
 }
 
 #[tokio::main]

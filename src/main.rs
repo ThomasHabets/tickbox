@@ -31,7 +31,7 @@ struct Opt {
     wait: bool,
 }
 
-fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line]) {
+fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line], scroll: &mut usize) {
     use ratatui::layout::Constraint::Fill;
     use ratatui::layout::Layout;
     use ratatui::widgets::{Block, Paragraph};
@@ -42,11 +42,17 @@ fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line]) {
         Paragraph::new(status.to_owned()).block(Block::bordered().title("Workflow")),
         top,
     );
+    let nlines = out.lines().into_iter().collect::<Vec<_>>().len();
+    *scroll = (*scroll).clamp(
+        0,
+        nlines.max(bottom.height as usize) - bottom.height as usize + 2,
+    );
 
     let out = out
         .lines()
         .rev()
         // Subtract top and bottom border.
+        .skip(*scroll)
         .take((bottom.height - 2).into())
         .collect::<Vec<_>>()
         .into_iter()
@@ -85,6 +91,7 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
     let mut out = String::new();
     let mut status = Vec::new();
     let mut do_wait = false;
+    let mut scroll = 0;
     'outer: loop {
         loop {
             match rx.try_recv() {
@@ -108,12 +115,14 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
                 }
             }
         }
-        terminal.draw(|frame| render(frame, &out, &status))?;
+        terminal.draw(|frame| render(frame, &out, &status, &mut scroll))?;
         // Handle input.
         if crossterm::event::poll(std::time::Duration::from_millis(50)).unwrap() {
             match crossterm::event::read().unwrap() {
                 crossterm::event::Event::Key(key) if key.kind == KeyEventKind::Press => {
                     match key.code {
+                        KeyCode::Char('j') => scroll = scroll.saturating_sub(1),
+                        KeyCode::Char('k') => scroll += 1,
                         KeyCode::Char('q') => break,
                         KeyCode::Char('Q') => break,
                         _ => {}
@@ -124,7 +133,9 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
         }
     }
     out += "\n========DONE==========";
-    terminal.draw(|frame| render(frame, &out, &status)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &out, &status, &mut scroll))
+        .unwrap();
     ratatui::restore();
     Ok(())
 }

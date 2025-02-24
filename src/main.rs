@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 
 use anyhow::{Error, Result};
-use log::trace;
+use log::{info, trace};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use tokio::task;
@@ -29,6 +29,9 @@ struct Opt {
 
     #[arg(long)]
     wait: bool,
+
+    #[arg(long, default_value = "/dev/null")]
+    log: String,
 }
 
 fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line], scroll: &mut usize) {
@@ -325,10 +328,11 @@ fn load_config(dir: &std::path::Path) -> Result<Config> {
         match parts[0] {
             "#" => continue,
             "env" => {
-                let parts = line.splitn(2, ' ').collect::<Vec<_>>();
+                let parts = parts[1].splitn(2, ' ').collect::<Vec<_>>();
                 if parts.len() != 2 {
                     return Err(Error::msg(format!("invalid config line {n}: {line}")));
                 }
+                info!("Setting env {} to {}", parts[0], parts[1]);
                 config.envs.push((parts[0].into(), parts[1].into()));
             }
             _ => {
@@ -345,7 +349,7 @@ async fn main() -> Result<()> {
     simplelog::WriteLogger::init(
         simplelog::LevelFilter::Info,
         simplelog::Config::default(),
-        std::fs::File::create("output.log").unwrap(),
+        std::fs::File::create(opt.log).unwrap(),
     )?;
     let mut conf = load_config(&opt.dir)?;
     let mut steps = load_tasks(&opt.dir)?;

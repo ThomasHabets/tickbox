@@ -123,6 +123,7 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
                     match key.code {
                         KeyCode::Char('j') => scroll = scroll.saturating_sub(1),
                         KeyCode::Char('k') => scroll += 1,
+                        KeyCode::Char('l') => terminal.clear()?,
                         KeyCode::Char('q') => break,
                         KeyCode::Char('Q') => break,
                         _ => {}

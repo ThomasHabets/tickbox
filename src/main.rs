@@ -120,6 +120,8 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
                 }
             }
         }
+        // TODO: get the actual output window height.
+        let out_height = 10;
         terminal.draw(|frame| render(frame, &out, &status, &mut scroll))?;
         // Handle input.
         if crossterm::event::poll(std::time::Duration::from_millis(50)).unwrap() {
@@ -127,7 +129,9 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
                 crossterm::event::Event::Key(key) if key.kind == KeyEventKind::Press => {
                     match key.code {
                         KeyCode::Char('j') => scroll = scroll.saturating_sub(1),
+                        KeyCode::PageDown => scroll = scroll.saturating_sub(out_height),
                         KeyCode::Char('k') => scroll += 1,
+                        KeyCode::PageUp => scroll += out_height,
                         KeyCode::Char('l') => terminal.clear()?,
                         KeyCode::Char('q') => break,
                         KeyCode::Char('Q') => break,

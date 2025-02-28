@@ -128,9 +128,9 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
             match crossterm::event::read().unwrap() {
                 crossterm::event::Event::Key(key) if key.kind == KeyEventKind::Press => {
                     match key.code {
-                        KeyCode::Char('j') => scroll = scroll.saturating_sub(1),
+                        KeyCode::Char('j') | KeyCode::Down => scroll = scroll.saturating_sub(1),
                         KeyCode::PageDown => scroll = scroll.saturating_sub(out_height),
-                        KeyCode::Char('k') => scroll += 1,
+                        KeyCode::Char('k') | KeyCode::Up => scroll += 1,
                         KeyCode::PageUp => scroll += out_height,
                         KeyCode::Char('l') => terminal.clear()?,
                         KeyCode::Char('q') => break,

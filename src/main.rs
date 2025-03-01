@@ -88,7 +88,7 @@ enum State {
 
 enum UIUpdate {
     Wait,
-    Status(Vec<Line<'static>>),
+    Status(Vec<Task>),
     AddLine(String),
 }
 
@@ -121,9 +121,10 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
                 }
             }
         }
+        let status_lines = make_status_update(&status);
         // TODO: get the actual output window height.
         let out_height = 10;
-        terminal.draw(|frame| render(frame, &out, &status, &mut scroll))?;
+        terminal.draw(|frame| render(frame, &out, &status_lines, &mut scroll))?;
         // Handle input.
         if crossterm::event::poll(std::time::Duration::from_millis(50)).unwrap() {
             match crossterm::event::read().unwrap() {
@@ -143,6 +144,7 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
             }
         }
     }
+    let status = make_status_update(&status);
     out += "\n========DONE==========";
     terminal
         .draw(|frame| render(frame, &out, &status, &mut scroll))
@@ -278,13 +280,13 @@ fn format_duration(d: Duration) -> String {
     format!("{:7.1}s", d.as_secs_f64())
 }
 
-fn make_status_update(steps: &[Task]) -> UIUpdate {
+fn make_status_update(steps: &[Task]) -> Vec<Line<'static>> {
     let maxlen = steps.iter().map(|s| s.name.len()).max().expect("no steps?");
     let lines: Vec<_> = steps
         .iter()
         .map(|s| {
             let (pre, color, extra) = match s.state {
-                State::Running(_st) => (UNCHECKED, Color::Blue, "".to_owned()),
+                State::Running(st) => (UNCHECKED, Color::Blue, format_duration(st.elapsed())),
                 State::Complete(e) => (CHECKED, Color::Green, format_duration(e)),
                 State::Failed(e) => (FAILED, Color::Red, format_duration(e)),
                 State::Pending => (UNCHECKED, Color::Yellow, "".to_owned()),
@@ -308,7 +310,7 @@ fn make_status_update(steps: &[Task]) -> UIUpdate {
             )
         })
         .collect();
-    UIUpdate::Status(owned_lines)
+    owned_lines
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -392,12 +394,12 @@ async fn main() -> Result<()> {
         for (n, s) in steps.clone().iter_mut().enumerate() {
             if !opt.matching.is_match(&steps[n].cmd) {
                 steps[n].state = State::Skipped;
-                tx.send(make_status_update(&steps)).await.unwrap();
+                tx.send(UIUpdate::Status(steps.clone())).await.unwrap();
                 continue;
             }
             let now = Instant::now();
             steps[n].state = State::Running(now.clone());
-            tx.send(make_status_update(&steps)).await.unwrap();
+            tx.send(UIUpdate::Status(steps.clone())).await.unwrap();
 
             match run_command(s, &conf.envs, tx.clone()).await {
                 Ok(true) => {
@@ -409,7 +411,7 @@ async fn main() -> Result<()> {
                     let _ = tx.send(UIUpdate::Wait).await;
                     success = false;
                     steps[n].state = State::Failed(now.elapsed());
-                    let _ = tx.send(make_status_update(&steps)).await;
+                    let _ = tx.send(UIUpdate::Status(steps.clone())).await;
                     break;
                 }
                 Err(e) => {
@@ -418,7 +420,7 @@ async fn main() -> Result<()> {
                         .unwrap();
                 }
             }
-            let _ = tx.send(make_status_update(&steps)).await;
+            let _ = tx.send(UIUpdate::Status(steps.clone())).await;
         }
         success
     });

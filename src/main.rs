@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
@@ -78,9 +79,9 @@ struct Task {
 }
 #[derive(Clone)]
 enum State {
-    Complete,
-    Failed,
-    Running,
+    Complete(Duration),
+    Failed(Duration),
+    Running(Instant),
     Pending,
     Skipped,
 }
@@ -273,19 +274,24 @@ fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
     Ok(tasks)
 }
 
+fn format_duration(d: Duration) -> String {
+    format!("{:7.1}s", d.as_secs_f64())
+}
+
 fn make_status_update(steps: &[Task]) -> UIUpdate {
+    let maxlen = steps.iter().map(|s| s.name.len()).max().expect("no steps?");
     let lines: Vec<_> = steps
         .iter()
         .map(|s| {
-            let (pre, color) = match s.state {
-                State::Running => (UNCHECKED, Color::Blue),
-                State::Complete => (CHECKED, Color::Green),
-                State::Failed => (FAILED, Color::Red),
-                State::Pending => (UNCHECKED, Color::Yellow),
-                State::Skipped => (UNCHECKED, Color::Gray),
+            let (pre, color, extra) = match s.state {
+                State::Running(_st) => (UNCHECKED, Color::Blue, "".to_owned()),
+                State::Complete(e) => (CHECKED, Color::Green, format_duration(e)),
+                State::Failed(e) => (FAILED, Color::Red, format_duration(e)),
+                State::Pending => (UNCHECKED, Color::Yellow, "".to_owned()),
+                State::Skipped => (UNCHECKED, Color::Gray, "".to_owned()),
             };
             Line::from(vec![Span::styled(
-                format!("{pre} {}", s.name),
+                format!("{pre} {:<maxlen$} {extra}", s.name),
                 Style::default().fg(color),
             )])
         })
@@ -389,19 +395,20 @@ async fn main() -> Result<()> {
                 tx.send(make_status_update(&steps)).await.unwrap();
                 continue;
             }
-            steps[n].state = State::Running;
+            let now = Instant::now();
+            steps[n].state = State::Running(now.clone());
             tx.send(make_status_update(&steps)).await.unwrap();
 
             match run_command(s, &conf.envs, tx.clone()).await {
                 Ok(true) => {
-                    steps[n].state = State::Complete;
+                    steps[n].state = State::Complete(now.elapsed());
                 }
                 Ok(false) => {
                     // This send() fails if the UI is gone, so nowhere to
                     // display it anyway.
                     let _ = tx.send(UIUpdate::Wait).await;
                     success = false;
-                    steps[n].state = State::Failed;
+                    steps[n].state = State::Failed(now.elapsed());
                     let _ = tx.send(make_status_update(&steps)).await;
                     break;
                 }

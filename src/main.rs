@@ -398,7 +398,7 @@ async fn main() -> Result<()> {
                 continue;
             }
             let now = Instant::now();
-            steps[n].state = State::Running(now.clone());
+            steps[n].state = State::Running(now);
             tx.send(UIUpdate::Status(steps.clone())).await.unwrap();
 
             match run_command(s, &conf.envs, tx.clone()).await {

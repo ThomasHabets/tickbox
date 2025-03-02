@@ -108,6 +108,7 @@ enum UIUpdate {
     AddLine(String),
 }
 
+/// Run the UI until the channel with UIUpdates ends.
 async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
     let mut terminal = ratatui::init();
     let mut out = String::new();
@@ -161,7 +162,7 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
         }
     }
     let status = make_status_update(&status);
-    out += "\n========DONE==========";
+    out += "\n======== Exiting tickbox UI ==========";
     terminal
         .draw(|frame| render(frame, &out, &status, &mut scroll))
         .unwrap();
@@ -176,6 +177,15 @@ async fn run_command(
 ) -> Result<bool> {
     use tokio::io::AsyncBufReadExt;
     use tokio::io::BufReader;
+
+    // TODO: Make this fixed width.
+    tx.send(UIUpdate::AddLine(format!(
+        "============ Running \"{}\" ================",
+        task.name,
+    )))
+    .await
+    .unwrap();
+
     let mut cmd = tokio::process::Command::new("bash")
         .arg("-c")
         .arg(task.cmd.clone())
@@ -229,13 +239,15 @@ async fn run_command(
                 use std::os::unix::process::ExitStatusExt;
                 if let Some(code) = status.code() {
                     tx.send(UIUpdate::AddLine(format!(
-                        "==> Command exited with code {code}"
+                        "==> Command \"{}\" exited with code {code}",
+                        task.name,
                     )))
                     .await
                     .unwrap();
                 } else if let Some(sig) = status.signal() {
                     tx.send(UIUpdate::AddLine(format!(
-                        "==> Command exited with signal {sig} "
+                        "==> Command \"{}\" exited with signal {sig} ",
+                        task.name
                     )))
                     .await
                     .unwrap();

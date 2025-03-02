@@ -170,6 +170,9 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
     Ok(())
 }
 
+/// Run a command, and wait for it to finish.
+///
+/// Returns `true` if the command exited with code 0.
 async fn run_command(
     task: &Task,
     envs: &[(OsString, OsString)],
@@ -259,6 +262,7 @@ async fn run_command(
     Ok(false)
 }
 
+/// Load workflow (list of tasks) from directory.
 fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
     use itertools::Itertools;
     Ok(std::fs::read_dir(path)
@@ -294,6 +298,7 @@ fn format_duration(d: Duration) -> String {
     format!("{:7.1}s", d.as_secs_f64())
 }
 
+/// Take the tasks and turn them into something nicely formatted.
 fn make_status_update(steps: &[Task]) -> Vec<Line<'static>> {
     let maxlen = steps.iter().map(|s| s.name.len()).max().expect("no steps?");
     let lines: Vec<_> = steps
@@ -312,7 +317,7 @@ fn make_status_update(steps: &[Task]) -> Vec<Line<'static>> {
             )])
         })
         .collect();
-    let owned_lines: Vec<Line> = lines
+    lines
         .clone()
         .into_iter()
         .map(|line| {
@@ -323,8 +328,7 @@ fn make_status_update(steps: &[Task]) -> Vec<Line<'static>> {
                     .collect::<Vec<_>>(),
             )
         })
-        .collect();
-    owned_lines
+        .collect()
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -346,6 +350,7 @@ where
         .collect())
 }
 
+/// Load config in JSON format.
 fn load_config(dir: &std::path::Path) -> Result<Config> {
     let filename = dir.join("tickbox.json");
     let contents = match std::fs::read_to_string(&filename) {
@@ -381,6 +386,8 @@ async fn main() -> Result<()> {
         ("TICKBOX_TEMPDIR".into(), tmp_dir.path().into()),
         ("TICKBOX_CWD".into(), cwd.to_str().unwrap().into()),
     ]);
+
+    // If CWD is a git repository, put the branch name into an env.
     {
         let gitdir = cwd.join(".git");
         if gitdir.exists() && gitdir.is_dir() {

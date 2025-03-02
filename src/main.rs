@@ -41,6 +41,7 @@ struct Opt {
     log: String,
 }
 
+// Render the UI, once.
 fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line], scroll: &mut usize) {
     use ratatui::layout::Constraint::Fill;
     use ratatui::layout::Layout;
@@ -77,12 +78,15 @@ fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line], scroll: &mut u
     );
 }
 
+/// A task is one step in a workflow, and therefore one file on disk.
 #[derive(Clone)]
 struct Task {
     name: String,
     cmd: std::path::PathBuf,
     state: State,
 }
+
+/// The state of a task.
 #[derive(Clone)]
 enum State {
     Complete(Duration),
@@ -92,9 +96,15 @@ enum State {
     Skipped,
 }
 
+/// A UIUpdate is sent to the UI thread whenever there's any news.
 enum UIUpdate {
+    /// Enable waiting when finished, even if all tasks succeed.
     Wait,
+
+    /// Update the status window.
     Status(Vec<Task>),
+
+    /// Add a line to the stdout/stderr window.
     AddLine(String),
 }
 
@@ -238,37 +248,34 @@ async fn run_command(
 }
 
 fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
-    let entries = std::fs::read_dir(path).map_err(|e| {
-        std::io::Error::new(
-            e.kind(),
-            format!("Failed to read directory {}: {e}", path.display()),
-        )
-    })?;
-    let mut tasks = Vec::new();
-    for entry in entries.flatten() {
-        let filename = entry.path().display().to_string();
-        if filename.ends_with("~") {
-            continue;
-        }
-        if filename.ends_with(".conf") {
-            continue;
-        }
-        if filename.ends_with(".json") {
-            continue;
-        }
-        let cmd = entry.path();
-        let name = cmd.file_name().unwrap().to_str().unwrap();
-        if name.starts_with(".") {
-            continue;
-        }
-        tasks.push(Task {
-            name: name.to_string(),
-            cmd,
-            state: State::Pending,
-        });
-    }
-    tasks.sort_by(|a, b| a.cmd.cmp(&b.cmd));
-    Ok(tasks)
+    use itertools::Itertools;
+    Ok(std::fs::read_dir(path)
+        .map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to read directory {}: {e}", path.display()),
+            )
+        })?
+        .flatten()
+        .filter_map(|entry| {
+            let cmd = entry.path();
+            let name = cmd.file_name().unwrap().to_str().unwrap();
+
+            if name.ends_with("~") // Don't join.
+               || name.ends_with(".conf")
+               || name.ends_with(".json")
+               || name.starts_with(".")
+            {
+                return None;
+            }
+            Some(Task {
+                name: name.to_string(),
+                cmd,
+                state: State::Pending,
+            })
+        })
+        .sorted_by(|a, b| a.cmd.cmp(&b.cmd))
+        .collect())
 }
 
 fn format_duration(d: Duration) -> String {

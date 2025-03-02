@@ -894,6 +894,7 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm",
+ "itertools",
  "log",
  "ratatui",
  "regex",

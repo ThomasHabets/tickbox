@@ -46,6 +46,20 @@ in the workflow. Here's an example config:
 }
 ```
 
+## Using the UI
+
+The UI has two main parts: The top part shows all the steps in the workflow, and
+how they're going. The bottom part shows the output of all steps.
+
+### UI controls
+
+* `j` / Down — Scroll down by one line.
+* `k` / Up — Scroll up by one line.
+* PageDown — Scroll down by about a page.
+* PageUp — Scroll up by about a page.
+* `q` — Exit, whether the workflow has completed or not.
+* `l` — Redraw the screen, in case it got some ugly garbage.
+
 ## Not yet implemented
 
 * Color output is a bit buggy, and requires `l` key sometimes.

@@ -20,17 +20,23 @@ const FAILED: &str = "\u{2612}";
 #[derive(clap::Parser, Debug)]
 #[command(version, about)]
 struct Opt {
+    /// Directory with workflow scripts.
     #[arg(long)]
     dir: std::path::PathBuf,
+
+    /// Directory that tickbox should use as a starting working directory.
     #[arg(long, default_value = ".")]
     cwd: std::path::PathBuf,
 
+    /// Only run steps (files) matching regex.
     #[arg(long, default_value = ".*")]
     matching: regex::Regex,
 
+    /// Wait when done, even if successful.
     #[arg(long)]
     wait: bool,
 
+    /// Optionally log to file.
     #[arg(long, default_value = "/dev/null")]
     log: String,
 }

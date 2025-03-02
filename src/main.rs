@@ -80,7 +80,7 @@ fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line], scroll: &mut u
 #[derive(Clone)]
 struct Task {
     name: String,
-    cmd: String,
+    cmd: std::path::PathBuf,
     state: State,
 }
 #[derive(Clone)]
@@ -274,7 +274,7 @@ fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
                 .to_str()
                 .unwrap()
                 .to_string(),
-            cmd: entry.path().display().to_string(),
+            cmd: entry.path(),
             state: State::Pending,
         });
     }
@@ -398,7 +398,7 @@ async fn main() -> Result<()> {
     let runner = task::spawn(async move {
         let mut success = true;
         for (n, s) in steps.clone().iter_mut().enumerate() {
-            if !opt.matching.is_match(&steps[n].cmd) {
+            if !opt.matching.is_match(&steps[n].name) {
                 steps[n].state = State::Skipped;
                 tx.send(UIUpdate::Status(steps.clone())).await.unwrap();
                 continue;

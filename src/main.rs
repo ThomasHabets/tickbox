@@ -256,25 +256,14 @@ fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
         if filename.ends_with(".json") {
             continue;
         }
-        if entry
-            .path()
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .starts_with(".")
-        {
+        let cmd = entry.path();
+        let name = cmd.file_name().unwrap().to_str().unwrap();
+        if name.starts_with(".") {
             continue;
         }
         tasks.push(Task {
-            name: entry
-                .path()
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_string(),
-            cmd: entry.path(),
+            name: name.to_string(),
+            cmd,
             state: State::Pending,
         });
     }

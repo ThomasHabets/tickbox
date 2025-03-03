@@ -43,14 +43,14 @@ struct Opt {
 
 struct UiState {
     scroll: usize,
-    cutime: (std::time::Instant, u64, f64),
+    _cutime: (std::time::Instant, u64, f64),
 }
 
 impl Default for UiState {
     fn default() -> Self {
         Self {
             scroll: 0,
-            cutime: (std::time::Instant::now(), cutime(), 0.0),
+            _cutime: (std::time::Instant::now(), cutime(), 0.0),
         }
     }
 }
@@ -80,16 +80,32 @@ fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line], state: &mut Ui
     let bottom = chunks[1];
 
     // Split the top section into two horizontal sections (left and right)
+    /*
     let top_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(top);
     let top_left = top_chunks[0];
     let top_right = top_chunks[1];
+    let cur = (std::time::Instant::now(), cutime());
+    let elapsed = cur.0 - state.cutime.0;
+    let cpu = if elapsed.as_secs_f64() > 1.0 {
+        let cpu = ((cur.1 - state.cutime.1) as f64) / elapsed.as_secs_f64();
+        state.cutime = (cur.0, cur.1, cpu);
+        cpu
+    } else {
+        state.cutime.2
+    };
+    frame.render_widget(
+        Paragraph::new(format!("CPU: {cpu:.0}%")).block(Block::bordered().title("Resources")),
+        top_right,
+    );
+    */
 
+    // Render top part.
     frame.render_widget(
         Paragraph::new(status.to_owned()).block(Block::bordered().title("Workflow")),
-        top_left,
+        top,
     );
     let nlines = out.lines().collect::<Vec<_>>().len();
     state.scroll = state.scroll.clamp(
@@ -97,6 +113,7 @@ fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line], state: &mut Ui
         nlines.max(bottom.height as usize) - bottom.height as usize + 2,
     );
 
+    // Render bottom part, the command output.
     use ansi_to_tui::IntoText;
     let out: Vec<Line> = out
         .lines()
@@ -113,19 +130,6 @@ fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line], state: &mut Ui
     frame.render_widget(
         Paragraph::new(out).block(Block::bordered().title("Command output")),
         bottom,
-    );
-    let cur = (std::time::Instant::now(), cutime());
-    let elapsed = cur.0 - state.cutime.0;
-    let cpu = if elapsed.as_secs_f64() > 1.0 {
-        let cpu = ((cur.1 - state.cutime.1) as f64) / elapsed.as_secs_f64();
-        state.cutime = (cur.0, cur.1, cpu);
-        cpu
-    } else {
-        state.cutime.2
-    };
-    frame.render_widget(
-        Paragraph::new(format!("CPU: {cpu:.0}%")).block(Block::bordered().title("Resources")),
-        top_right,
     );
 }
 

@@ -41,20 +41,58 @@ struct Opt {
     log: String,
 }
 
+struct UiState {
+    scroll: usize,
+    cutime: (std::time::Instant, u64, f64),
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        Self {
+            scroll: 0,
+            cutime: (std::time::Instant::now(), cutime(), 0.0),
+        }
+    }
+}
+
+fn cutime() -> u64 {
+    use libc::{times, tms};
+    let mut tms_info: tms = unsafe { std::mem::zeroed() };
+    let rc = unsafe { times(&mut tms_info) };
+    if rc == -1 {
+        0
+    } else {
+        tms_info.tms_cutime as u64
+    }
+}
+
 // Render the UI, once.
-fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line], scroll: &mut usize) {
-    use ratatui::layout::Constraint::Fill;
+fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line], state: &mut UiState) {
     use ratatui::layout::Layout;
+    use ratatui::prelude::*;
     use ratatui::widgets::{Block, Paragraph};
 
-    let [top, bottom] = Layout::vertical([Fill(1); 2]).areas(frame.area());
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(frame.area());
+    let top = chunks[0];
+    let bottom = chunks[1];
+
+    // Split the top section into two horizontal sections (left and right)
+    let top_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+        .split(top);
+    let top_left = top_chunks[0];
+    let top_right = top_chunks[1];
 
     frame.render_widget(
         Paragraph::new(status.to_owned()).block(Block::bordered().title("Workflow")),
-        top,
+        top_left,
     );
     let nlines = out.lines().collect::<Vec<_>>().len();
-    *scroll = (*scroll).clamp(
+    state.scroll = state.scroll.clamp(
         0,
         nlines.max(bottom.height as usize) - bottom.height as usize + 2,
     );
@@ -64,7 +102,7 @@ fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line], scroll: &mut u
         .lines()
         .rev()
         // Subtract top and bottom border.
-        .skip(*scroll)
+        .skip(state.scroll)
         .take((bottom.height - 2).into())
         .collect::<Vec<_>>()
         .into_iter()
@@ -75,6 +113,19 @@ fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line], scroll: &mut u
     frame.render_widget(
         Paragraph::new(out).block(Block::bordered().title("Command output")),
         bottom,
+    );
+    let cur = (std::time::Instant::now(), cutime());
+    let elapsed = cur.0 - state.cutime.0;
+    let cpu = if elapsed.as_secs_f64() > 1.0 {
+        let cpu = ((cur.1 - state.cutime.1) as f64) / elapsed.as_secs_f64();
+        state.cutime = (cur.0, cur.1, cpu);
+        cpu
+    } else {
+        state.cutime.2
+    };
+    frame.render_widget(
+        Paragraph::new(format!("CPU: {cpu:.0}%")).block(Block::bordered().title("Resources")),
+        top_right,
     );
 }
 
@@ -114,7 +165,7 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
     let mut out = String::new();
     let mut status = Vec::new();
     let mut do_wait = false;
-    let mut scroll = 0;
+    let mut state = UiState::default();
     'outer: loop {
         loop {
             match rx.try_recv() {
@@ -141,16 +192,18 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
         let status_lines = make_status_update(&status);
         // TODO: get the actual output window height.
         let out_height = 10;
-        terminal.draw(|frame| render(frame, &out, &status_lines, &mut scroll))?;
+        terminal.draw(|frame| render(frame, &out, &status_lines, &mut state))?;
         // Handle input.
         if crossterm::event::poll(std::time::Duration::from_millis(50)).unwrap() {
             match crossterm::event::read().unwrap() {
                 crossterm::event::Event::Key(key) if key.kind == KeyEventKind::Press => {
                     match key.code {
-                        KeyCode::Char('j') | KeyCode::Down => scroll = scroll.saturating_sub(1),
-                        KeyCode::PageDown => scroll = scroll.saturating_sub(out_height),
-                        KeyCode::Char('k') | KeyCode::Up => scroll += 1,
-                        KeyCode::PageUp => scroll += out_height,
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            state.scroll = state.scroll.saturating_sub(1)
+                        }
+                        KeyCode::PageDown => state.scroll = state.scroll.saturating_sub(out_height),
+                        KeyCode::Char('k') | KeyCode::Up => state.scroll += 1,
+                        KeyCode::PageUp => state.scroll += out_height,
                         KeyCode::Char('l') => terminal.clear()?,
                         KeyCode::Char('q') => break,
                         KeyCode::Char('Q') => break,
@@ -164,7 +217,7 @@ async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
     let status = make_status_update(&status);
     out += "\n======== Exiting tickbox UI ==========";
     terminal
-        .draw(|frame| render(frame, &out, &status, &mut scroll))
+        .draw(|frame| render(frame, &out, &status, &mut state))
         .unwrap();
     ratatui::restore();
     Ok(())

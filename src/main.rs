@@ -383,6 +383,13 @@ fn load_config(dir: &std::path::Path) -> Result<Config> {
     serde_json::from_str(&contents).map_err(|e| Error::msg(format!("JSON parse: {e}")))
 }
 
+fn strip_newlines(os: OsString) -> OsString {
+    match os.into_string() {
+        Ok(s) => OsString::from(s.trim_end_matches(['\n', '\r'])),
+        Err(e) => panic!("Branch name not valid UTF-8: {e:?}"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let opt = Opt::parse();
@@ -413,11 +420,9 @@ async fn main() -> Result<()> {
             if !out.status.success() {
                 return Err(Error::msg("git branch exec failed"));
             }
+            let branch = strip_newlines(OsString::from_vec(out.stdout.clone()));
             use std::os::unix::ffi::OsStringExt;
-            conf.envs.push((
-                "TICKBOX_BRANCH".into(),
-                OsString::from_vec(out.stderr.clone()),
-            ));
+            conf.envs.push(("TICKBOX_BRANCH".into(), branch));
         }
     }
     let (tx, rx) = mpsc::channel(500);

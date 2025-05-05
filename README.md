@@ -5,7 +5,18 @@ A simple workflow executor, for presubmits and similar things.
 See a simple demo here:
 https://asciinema.org/a/VPzajFCTE3Wk1LvDqDavZrZst
 
-## Setting up
+## Installing
+
+Assuming you have cargo (Rust) installed, you can just run:
+
+```
+$ cargo install tickbox
+```
+
+If you don't already have Rust installed, you can either run `apt-get install
+cargo` or (preferably) use [the rustup installer](https://rustup.rs/).
+
+## Setting up tickbox for your project
 
 1. Create a directory to keep the workflow. For example `tickbox` in your source
    code repository.

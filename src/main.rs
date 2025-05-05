@@ -39,6 +39,10 @@ struct Opt {
     /// Optionally log to file.
     #[arg(long, default_value = "/dev/null")]
     log: String,
+
+    /// Optionally disable TUI.
+    #[arg(long)]
+    disable_tui: bool,
 }
 
 #[derive(Default)]
@@ -108,6 +112,18 @@ enum State {
     Skipped,
 }
 
+impl std::fmt::Display for State {
+    fn fmt(&self, w: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match self {
+            State::Pending => write!(w, "Pending"),
+            State::Running(_) => write!(w, "Running"),
+            State::Failed(d) => write!(w, "Failed after {}", format_duration(*d)),
+            State::Complete(d) => write!(w, "Succeeded after {}", format_duration(*d)),
+            State::Skipped => write!(w, "Skipped"),
+        }
+    }
+}
+
 /// A UIUpdate is sent to the UI thread whenever there's any news.
 enum UIUpdate {
     /// Enable waiting when finished, even if all tasks succeed.
@@ -120,8 +136,32 @@ enum UIUpdate {
     AddLine(String),
 }
 
+async fn run_raw(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
+    loop {
+        match rx.try_recv() {
+            Ok(UIUpdate::Wait) => {
+                // Waiting only makes sense in TUI mode.
+            }
+            Ok(UIUpdate::AddLine(line)) => {
+                println!("{line}");
+            }
+            Ok(UIUpdate::Status(st)) => {
+                let maxlen = st.iter().map(|s| s.name.len()).max().expect("no steps?");
+                println!("=== Status ===");
+                for task in st {
+                    println!("  {:>maxlen$} {}", task.name, task.state);
+                }
+            }
+            Err(TryRecvError::Empty) => continue,
+            Err(TryRecvError::Disconnected) => {
+                return Ok(());
+            }
+        }
+    }
+}
+
 /// Run the UI until the channel with UIUpdates ends.
-async fn run_ui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
+async fn run_tui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
     let mut terminal = ratatui::init();
     let mut out = String::new();
     let mut status = Vec::new();
@@ -465,7 +505,11 @@ async fn main() -> Result<()> {
         success
     });
 
-    run_ui(rx).await?;
+    if opt.disable_tui {
+        run_raw(rx).await?;
+    } else {
+        run_tui(rx).await?;
+    }
     if !runner.await? {
         std::process::exit(1);
     }

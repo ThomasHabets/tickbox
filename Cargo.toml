@@ -2,6 +2,12 @@
 name = "tickbox"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+authors = ["Thomas Habets <thomas@habets.se>"]
+readme = "README.md"
+repository = "https://github.com/ThomasHabets/tickbox"
+description = "Simple tui workflow executor."
+keywords = ["test", "pre-commit"]
 
 [dependencies]
 ansi-parser = "0.9.1"

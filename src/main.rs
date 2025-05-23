@@ -453,7 +453,7 @@ fn make_status_update(steps: &[Task]) -> Vec<Line<'static>> {
 struct Config {
     #[serde(deserialize_with = "deserialize_envs")]
     envs: Vec<(OsString, OsString)>,
-    #[serde(deserialize_with = "deserialize_regexes")]
+    #[serde(deserialize_with = "deserialize_regexes", default)]
     parallel_regex: Vec<regex::Regex>,
 }
 

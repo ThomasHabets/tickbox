@@ -148,6 +148,84 @@ impl std::fmt::Display for State {
     }
 }
 
+/// Return `true` if this is a sync point, that stops parallel steps.
+fn sync_point(
+    task: &Task,
+    running: &[&Task],
+    opt_par: &[(usize, usize)],
+    conf_par_re: &[regex::Regex],
+) -> bool {
+    if !opt_par.is_empty() {
+        // If command line flag ranges are provided, then use that instead of
+        // the config.
+        if let Some(r) = opt_par.iter().find(|r| r.0 <= task.id && task.id <= r.1) {
+            return !running.iter().all(|t| r.0 <= t.id && t.id <= r.1);
+        }
+        return true;
+    }
+    if let Some(r) = conf_par_re.iter().find(|r| r.is_match(&task.name)) {
+        return !running.iter().all(|t| r.is_match(&t.name));
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use regex::Regex;
+
+    #[test]
+    fn sync_test() -> Result<()> {
+        let running = [
+            &Task {
+                n: 0,
+                id: 1,
+                name: "01-first".into(),
+                cmd: "".into(),
+                state: State::Pending,
+            },
+            &Task {
+                n: 1,
+                id: 2,
+                name: "02-second".into(),
+                cmd: "".into(),
+                state: State::Pending,
+            },
+        ];
+        let new = Task {
+            n: 2,
+            id: 3,
+            name: "03-third".into(),
+            cmd: "".into(),
+            state: State::Pending,
+        };
+        for (a, b, out) in [
+            (vec![], vec![], true),
+            // Test command line.
+            (vec![(0, 1)], vec![], true),
+            (vec![(0, 2)], vec![], true),
+            (vec![(0, 3)], vec![], false),
+            (vec![(0, 4)], vec![], false),
+            (vec![(1, 4)], vec![], false),
+            (vec![(2, 4)], vec![], true),
+            // Test config.
+            (vec![], vec![Regex::new("XXX")?], true),
+            (vec![], vec![Regex::new("^01-")?], true),
+            (vec![], vec![Regex::new("^0[1-2]-")?], true),
+            (vec![], vec![Regex::new("^0[1-3]-")?], false),
+            (vec![], vec![Regex::new("^0[1-4]-")?], false),
+            (vec![], vec![Regex::new("^0[2-4]-")?], true),
+        ] {
+            assert_eq!(
+                sync_point(&new, &running, &a, &b),
+                out,
+                "failed for input {a:?} {b:?} => {out}"
+            );
+        }
+        Ok(())
+    }
+}
+
 /// A UIUpdate is sent to the UI thread whenever there's any news.
 enum UIUpdate {
     /// Enable waiting when finished, even if all tasks succeed.
@@ -569,15 +647,8 @@ async fn main() -> Result<()> {
             let opt = opt.clone();
             let tx = tx.clone();
             let conf = conf.clone();
-            let sync_point =
-                if let Some(r) = opt.parallel.iter().find(|r| r.0 <= s.id && s.id <= r.1) {
-                    !running.iter().all(|(t, _)| r.0 <= t.id && t.id <= r.1)
-                } else if let Some(r) = conf.parallel_regex.iter().find(|r| r.is_match(&s.name)) {
-                    !running.iter().all(|(t, _)| r.is_match(&t.name))
-                } else {
-                    true
-                };
-            if sync_point {
+            let rs: Vec<&Task> = running.iter().map(|(x, _)| x).collect();
+            if sync_point(&s, &rs, &opt.parallel, &conf.parallel_regex) {
                 for (_, t) in running.iter_mut() {
                     if !t.await.unwrap() {
                         //success = false;

@@ -453,6 +453,29 @@ fn make_status_update(steps: &[Task]) -> Vec<Line<'static>> {
 struct Config {
     #[serde(deserialize_with = "deserialize_envs")]
     envs: Vec<(OsString, OsString)>,
+    #[serde(deserialize_with = "deserialize_regexes")]
+    parallel_regex: Vec<regex::Regex>,
+}
+
+fn deserialize_regexes<'de, D>(deserializer: D) -> Result<Vec<regex::Regex>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let strs = Vec::<String>::deserialize(deserializer)?;
+    let mut regexes = Vec::with_capacity(strs.len());
+
+    for s in strs {
+        match regex::Regex::new(&s) {
+            Ok(r) => regexes.push(r),
+            Err(e) => {
+                return Err(serde::de::Error::custom(format!(
+                    "Invalid regex '{s}': {e}"
+                )));
+            }
+        }
+    }
+    Ok(regexes)
 }
 
 fn deserialize_envs<'de, D>(deserializer: D) -> Result<Vec<(OsString, OsString)>, D::Error>
@@ -539,7 +562,7 @@ async fn main() -> Result<()> {
     let disable_tui = opt.disable_tui;
     let runner = task::spawn(async move {
         let mut success = true;
-        let mut running: Vec<tokio::task::JoinHandle<bool>> = Vec::new();
+        let mut running: Vec<(Task, tokio::task::JoinHandle<bool>)> = Vec::new();
         for (n, s) in steps.clone().iter_mut().enumerate() {
             let s = s.clone();
             let mut steps = steps.clone();
@@ -549,51 +572,57 @@ async fn main() -> Result<()> {
             let sync_point =
                 if let Some(r) = opt.parallel.iter().find(|r| r.0 <= s.id && s.id <= r.1) {
                     r.0 > s.id || r.1 < s.id
+                } else if let Some(r) = conf.parallel_regex.iter().find(|r| r.is_match(&s.name)) {
+                    !running.iter().all(|(t, _)| r.is_match(&t.name))
                 } else {
                     true
                 };
             if sync_point {
-                for t in running.iter_mut() {
+                for (_, t) in running.iter_mut() {
                     if !t.await.unwrap() {
-                        success = false;
+                        //success = false;
+                        return false;
                     }
                 }
                 running.clear();
             }
 
-            running.push(task::spawn(async move {
-                if !opt.matching.is_match(&steps[n].name) {
-                    steps[n].state = State::Skipped;
+            running.push((
+                s.clone(),
+                task::spawn(async move {
+                    if !opt.matching.is_match(&steps[n].name) {
+                        steps[n].state = State::Skipped;
+                        tx.send(UIUpdate::Status(steps[n].clone())).await.unwrap();
+                        return true;
+                    }
+                    let now = Instant::now();
+                    steps[n].state = State::Running(now);
                     tx.send(UIUpdate::Status(steps[n].clone())).await.unwrap();
-                    return true;
-                }
-                let now = Instant::now();
-                steps[n].state = State::Running(now);
-                tx.send(UIUpdate::Status(steps[n].clone())).await.unwrap();
 
-                match run_command(&s, &conf.envs, tx.clone()).await {
-                    Ok(true) => {
-                        steps[n].state = State::Complete(now.elapsed());
+                    match run_command(&s, &conf.envs, tx.clone()).await {
+                        Ok(true) => {
+                            steps[n].state = State::Complete(now.elapsed());
+                        }
+                        Ok(false) => {
+                            // This send() fails if the UI is gone, so nowhere to
+                            // display it anyway.
+                            let _ = tx.send(UIUpdate::Wait).await;
+                            steps[n].state = State::Failed(now.elapsed());
+                            let _ = tx.send(UIUpdate::Status(steps[n].clone())).await;
+                            return false;
+                        }
+                        Err(e) => {
+                            tx.send(UIUpdate::AddLine(format!("Got an error: {e:?}\n")))
+                                .await
+                                .unwrap();
+                        }
                     }
-                    Ok(false) => {
-                        // This send() fails if the UI is gone, so nowhere to
-                        // display it anyway.
-                        let _ = tx.send(UIUpdate::Wait).await;
-                        steps[n].state = State::Failed(now.elapsed());
-                        let _ = tx.send(UIUpdate::Status(steps[n].clone())).await;
-                        return false;
-                    }
-                    Err(e) => {
-                        tx.send(UIUpdate::AddLine(format!("Got an error: {e:?}\n")))
-                            .await
-                            .unwrap();
-                    }
-                }
-                let _ = tx.send(UIUpdate::Status(steps[n].clone())).await;
-                true
-            }));
+                    let _ = tx.send(UIUpdate::Status(steps[n].clone())).await;
+                    true
+                }),
+            ));
         }
-        for r in running.into_iter() {
+        for (_, r) in running.into_iter() {
             if !r.await.unwrap() {
                 success = false;
             }

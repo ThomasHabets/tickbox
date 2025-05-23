@@ -17,7 +17,7 @@ const UNCHECKED: &str = "\u{2610}";
 const CHECKED: &str = "\u{2611}";
 const FAILED: &str = "\u{2612}";
 
-#[derive(clap::Parser, Debug)]
+#[derive(clap::Parser, Debug, Clone)]
 #[command(version, about)]
 struct Opt {
     /// Directory with workflow scripts.
@@ -43,6 +43,28 @@ struct Opt {
     /// Optionally disable TUI.
     #[arg(long)]
     disable_tui: bool,
+
+    /// Enable parallel ranges.
+    #[arg(long, num_args=1, value_delimiter=',', value_parser=parse_range)]
+    parallel: Vec<(usize, usize)>,
+}
+
+fn parse_range(s: &str) -> Result<(usize, usize), String> {
+    let part = s;
+    use std::str::FromStr;
+    let parts: Vec<&str> = part.split('-').collect();
+    if parts.len() != 2 {
+        return Err(format!("Invalid range format: {s}"));
+    }
+
+    let start = usize::from_str(parts[0]).map_err(|_| format!("Invalid number: {}", parts[0]))?;
+    let end = usize::from_str(parts[1]).map_err(|_| format!("Invalid number: {}", parts[1]))?;
+
+    if start > end {
+        return Err(format!("End must be less than start: {s}"));
+    }
+
+    Ok((start, end))
 }
 
 #[derive(Default)]
@@ -95,15 +117,17 @@ fn render(frame: &mut ratatui::Frame, out: &str, status: &[Line], state: &mut Ui
 }
 
 /// A task is one step in a workflow, and therefore one file on disk.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct Task {
+    n: usize,
+    id: usize,
     name: String,
     cmd: std::path::PathBuf,
     state: State,
 }
 
 /// The state of a task.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum State {
     Complete(Duration),
     Failed(Duration),
@@ -130,13 +154,14 @@ enum UIUpdate {
     Wait,
 
     /// Update the status window.
-    Status(Vec<Task>),
+    Status(Task),
 
     /// Add a line to the stdout/stderr window.
     AddLine(String),
 }
 
 async fn run_raw(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
+    let mut status = Vec::new();
     loop {
         match rx.try_recv() {
             Ok(UIUpdate::Wait) => {
@@ -145,10 +170,18 @@ async fn run_raw(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
             Ok(UIUpdate::AddLine(line)) => {
                 println!("{line}");
             }
+            Ok(UIUpdate::Status(st)) if st.n == status.len() => {
+                status.push(st);
+            }
             Ok(UIUpdate::Status(st)) => {
-                let maxlen = st.iter().map(|s| s.name.len()).max().expect("no steps?");
+                status[st.n] = st.clone();
+                let maxlen = status
+                    .iter()
+                    .map(|s| s.name.len())
+                    .max()
+                    .expect("no steps?");
                 println!("=== Status ===");
-                for task in st {
+                for task in &status {
                     println!("  {:>maxlen$} {}", task.name, task.state);
                 }
             }
@@ -177,8 +210,11 @@ async fn run_tui(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
                     out += &line;
                     out += "\n";
                 }
+                Ok(UIUpdate::Status(st)) if st.n == status.len() => {
+                    status.push(st);
+                }
                 Ok(UIUpdate::Status(st)) => {
-                    status = st;
+                    status[st.n] = st.clone();
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -316,6 +352,18 @@ async fn run_command(
     Ok(false)
 }
 
+fn parse_usize_prefix(input: &str) -> Option<usize> {
+    let digits_end = input
+        .char_indices()
+        .take_while(|(_, c)| c.is_ascii_digit())
+        .map(|(i, _)| i + 1)
+        .last()?;
+
+    let (digits, _) = input.split_at(digits_end);
+    let value = digits.parse::<usize>().ok()?;
+    Some(value)
+}
+
 /// Load workflow (list of tasks) from directory.
 fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
     use itertools::Itertools;
@@ -338,13 +386,29 @@ fn load_tasks(path: &std::path::Path) -> Result<Vec<Task>> {
             {
                 return None;
             }
-            Some(Task {
+            let id = match parse_usize_prefix(name).ok_or(Error::msg(format!(
+                "step file name doesn't start with a number: {name}"
+            ))) {
+                Ok(x) => x,
+                Err(e) => return Some(Err(e)),
+            };
+            Some(Ok(Task {
+                n: 0,
+                id,
                 name: name.to_string(),
                 cmd,
                 state: State::Pending,
-            })
+            }))
         })
-        .sorted_by(|a, b| a.cmd.cmp(&b.cmd))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .sorted_by(|a, b| a.id.cmp(&b.id))
+        .enumerate()
+        .map(|(n, t)| {
+            let mut t = t.clone();
+            t.n = n;
+            t
+        })
         .collect())
 }
 
@@ -385,7 +449,7 @@ fn make_status_update(steps: &[Task]) -> Vec<Line<'static>> {
         .collect()
 }
 
-#[derive(Default, serde::Deserialize)]
+#[derive(Default, serde::Deserialize, Clone)]
 struct Config {
     #[serde(deserialize_with = "deserialize_envs")]
     envs: Vec<(OsString, OsString)>,
@@ -436,10 +500,10 @@ async fn main() -> Result<()> {
     simplelog::WriteLogger::init(
         simplelog::LevelFilter::Info,
         simplelog::Config::default(),
-        std::fs::File::create(opt.log).unwrap(),
+        std::fs::File::create(&opt.log).unwrap(),
     )?;
     let mut conf = load_config(&opt.dir)?;
-    let mut steps = load_tasks(&opt.dir)?;
+    let steps = load_tasks(&opt.dir)?;
     std::env::set_current_dir(&opt.cwd)?;
     let cwd = std::env::current_dir()?;
     let tmp_dir = tempfile::TempDir::new()?;
@@ -469,43 +533,75 @@ async fn main() -> Result<()> {
     if opt.wait {
         tx.send(UIUpdate::Wait).await.unwrap();
     }
+    for s in steps.iter() {
+        tx.send(UIUpdate::Status(s.clone())).await.unwrap();
+    }
+    let disable_tui = opt.disable_tui;
     let runner = task::spawn(async move {
         let mut success = true;
+        let mut running: Vec<tokio::task::JoinHandle<bool>> = Vec::new();
         for (n, s) in steps.clone().iter_mut().enumerate() {
-            if !opt.matching.is_match(&steps[n].name) {
-                steps[n].state = State::Skipped;
-                tx.send(UIUpdate::Status(steps.clone())).await.unwrap();
-                continue;
+            let s = s.clone();
+            let mut steps = steps.clone();
+            let opt = opt.clone();
+            let tx = tx.clone();
+            let conf = conf.clone();
+            let sync_point =
+                if let Some(r) = opt.parallel.iter().find(|r| r.0 <= s.id && s.id <= r.1) {
+                    r.0 > s.id || r.1 < s.id
+                } else {
+                    true
+                };
+            if sync_point {
+                for t in running.iter_mut() {
+                    if !t.await.unwrap() {
+                        success = false;
+                    }
+                }
+                running.clear();
             }
-            let now = Instant::now();
-            steps[n].state = State::Running(now);
-            tx.send(UIUpdate::Status(steps.clone())).await.unwrap();
 
-            match run_command(s, &conf.envs, tx.clone()).await {
-                Ok(true) => {
-                    steps[n].state = State::Complete(now.elapsed());
+            running.push(task::spawn(async move {
+                if !opt.matching.is_match(&steps[n].name) {
+                    steps[n].state = State::Skipped;
+                    tx.send(UIUpdate::Status(steps[n].clone())).await.unwrap();
+                    return true;
                 }
-                Ok(false) => {
-                    // This send() fails if the UI is gone, so nowhere to
-                    // display it anyway.
-                    let _ = tx.send(UIUpdate::Wait).await;
-                    success = false;
-                    steps[n].state = State::Failed(now.elapsed());
-                    let _ = tx.send(UIUpdate::Status(steps.clone())).await;
-                    break;
+                let now = Instant::now();
+                steps[n].state = State::Running(now);
+                tx.send(UIUpdate::Status(steps[n].clone())).await.unwrap();
+
+                match run_command(&s, &conf.envs, tx.clone()).await {
+                    Ok(true) => {
+                        steps[n].state = State::Complete(now.elapsed());
+                    }
+                    Ok(false) => {
+                        // This send() fails if the UI is gone, so nowhere to
+                        // display it anyway.
+                        let _ = tx.send(UIUpdate::Wait).await;
+                        steps[n].state = State::Failed(now.elapsed());
+                        let _ = tx.send(UIUpdate::Status(steps[n].clone())).await;
+                        return false;
+                    }
+                    Err(e) => {
+                        tx.send(UIUpdate::AddLine(format!("Got an error: {e:?}\n")))
+                            .await
+                            .unwrap();
+                    }
                 }
-                Err(e) => {
-                    tx.send(UIUpdate::AddLine(format!("Got an error: {e:?}\n")))
-                        .await
-                        .unwrap();
-                }
+                let _ = tx.send(UIUpdate::Status(steps[n].clone())).await;
+                true
+            }));
+        }
+        for r in running.into_iter() {
+            if !r.await.unwrap() {
+                success = false;
             }
-            let _ = tx.send(UIUpdate::Status(steps.clone())).await;
         }
         success
     });
 
-    if opt.disable_tui {
+    if disable_tui {
         run_raw(rx).await?;
     } else {
         run_tui(rx).await?;

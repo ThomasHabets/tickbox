@@ -571,7 +571,7 @@ async fn main() -> Result<()> {
             let conf = conf.clone();
             let sync_point =
                 if let Some(r) = opt.parallel.iter().find(|r| r.0 <= s.id && s.id <= r.1) {
-                    r.0 > s.id || r.1 < s.id
+                    !running.iter().all(|(t, _)| r.0 <= t.id && t.id <= r.1)
                 } else if let Some(r) = conf.parallel_regex.iter().find(|r| r.is_match(&s.name)) {
                     !running.iter().all(|(t, _)| r.is_match(&t.name))
                 } else {

@@ -47,6 +47,10 @@ struct Opt {
     /// Enable parallel ranges.
     #[arg(long, num_args=1, value_delimiter=',', value_parser=parse_range)]
     parallel: Vec<(usize, usize)>,
+
+    /// Maximum task concurrency.
+    #[arg(long, default_value_t = 3)]
+    max_concurrency: usize,
 }
 
 fn parse_range(s: &str) -> Result<(usize, usize), String> {
@@ -640,60 +644,69 @@ async fn main() -> Result<()> {
     let disable_tui = opt.disable_tui;
     let runner = task::spawn(async move {
         let mut success = true;
-        let mut running: Vec<(Task, tokio::task::JoinHandle<bool>)> = Vec::new();
+        let mut running: Vec<Task> = Vec::new();
+        let mut handles: Vec<tokio::task::JoinHandle<bool>> = Vec::new();
         for (n, s) in steps.clone().iter_mut().enumerate() {
+            if handles.len() >= opt.max_concurrency {
+                let (res, idx, _rem) = futures::future::select_all(&mut handles).await;
+                match res {
+                    Ok(true) => {}
+                    Ok(false) => return false,
+                    Err(e) => panic!("{e}"),
+                }
+                handles.remove(idx);
+                running.remove(idx);
+            }
             let s = s.clone();
             let mut steps = steps.clone();
             let opt = opt.clone();
             let tx = tx.clone();
             let conf = conf.clone();
-            let rs: Vec<&Task> = running.iter().map(|(x, _)| x).collect();
+            let rs: Vec<&Task> = running.iter().collect();
             if sync_point(&s, &rs, &opt.parallel, &conf.parallel_regex) {
-                for (_, t) in running.iter_mut() {
+                for t in handles.iter_mut() {
                     if !t.await.unwrap() {
                         //success = false;
                         return false;
                     }
                 }
                 running.clear();
+                handles.clear();
             }
-
-            running.push((
-                s.clone(),
-                task::spawn(async move {
-                    if !opt.matching.is_match(&steps[n].name) {
-                        steps[n].state = State::Skipped;
-                        tx.send(UIUpdate::Status(steps[n].clone())).await.unwrap();
-                        return true;
-                    }
-                    let now = Instant::now();
-                    steps[n].state = State::Running(now);
+            running.push(s.clone());
+            handles.push(task::spawn(async move {
+                if !opt.matching.is_match(&steps[n].name) {
+                    steps[n].state = State::Skipped;
                     tx.send(UIUpdate::Status(steps[n].clone())).await.unwrap();
+                    return true;
+                }
+                let now = Instant::now();
+                steps[n].state = State::Running(now);
+                tx.send(UIUpdate::Status(steps[n].clone())).await.unwrap();
 
-                    match run_command(&s, &conf.envs, tx.clone()).await {
-                        Ok(true) => {
-                            steps[n].state = State::Complete(now.elapsed());
-                        }
-                        Ok(false) => {
-                            // This send() fails if the UI is gone, so nowhere to
-                            // display it anyway.
-                            let _ = tx.send(UIUpdate::Wait).await;
-                            steps[n].state = State::Failed(now.elapsed());
-                            let _ = tx.send(UIUpdate::Status(steps[n].clone())).await;
-                            return false;
-                        }
-                        Err(e) => {
-                            tx.send(UIUpdate::AddLine(format!("Got an error: {e:?}\n")))
-                                .await
-                                .unwrap();
-                        }
+                match run_command(&s, &conf.envs, tx.clone()).await {
+                    Ok(true) => {
+                        steps[n].state = State::Complete(now.elapsed());
                     }
-                    let _ = tx.send(UIUpdate::Status(steps[n].clone())).await;
-                    true
-                }),
-            ));
+                    Ok(false) => {
+                        // This send() fails if the UI is gone, so nowhere to
+                        // display it anyway.
+                        let _ = tx.send(UIUpdate::Wait).await;
+                        steps[n].state = State::Failed(now.elapsed());
+                        let _ = tx.send(UIUpdate::Status(steps[n].clone())).await;
+                        return false;
+                    }
+                    Err(e) => {
+                        tx.send(UIUpdate::AddLine(format!("Got an error: {e:?}\n")))
+                            .await
+                            .unwrap();
+                    }
+                }
+                let _ = tx.send(UIUpdate::Status(steps[n].clone())).await;
+                true
+            }));
         }
-        for (_, r) in running.into_iter() {
+        for r in handles.into_iter() {
             if !r.await.unwrap() {
                 success = false;
             }

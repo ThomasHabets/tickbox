@@ -17,6 +17,8 @@ const UNCHECKED: &str = "\u{2610}";
 const CHECKED: &str = "\u{2611}";
 const FAILED: &str = "\u{2612}";
 
+const DEFAULT_MAX_CONCURRENCY: usize = 1;
+
 #[derive(clap::Parser, Debug, Clone)]
 #[command(version, about)]
 struct Opt {
@@ -49,8 +51,8 @@ struct Opt {
     parallel: Vec<(usize, usize)>,
 
     /// Maximum task concurrency.
-    #[arg(long, default_value_t = 3)]
-    max_concurrency: usize,
+    #[arg(long)]
+    max_concurrency: Option<usize>,
 }
 
 fn parse_range(s: &str) -> Result<(usize, usize), String> {
@@ -537,6 +539,7 @@ struct Config {
     envs: Vec<(OsString, OsString)>,
     #[serde(deserialize_with = "deserialize_regexes", default)]
     parallel_regex: Vec<regex::Regex>,
+    max_concurrency: Option<usize>,
 }
 
 fn deserialize_regexes<'de, D>(deserializer: D) -> Result<Vec<regex::Regex>, D::Error>
@@ -642,12 +645,15 @@ async fn main() -> Result<()> {
         tx.send(UIUpdate::Status(s.clone())).await.unwrap();
     }
     let disable_tui = opt.disable_tui;
+    let max_concurrency = opt
+        .max_concurrency
+        .unwrap_or(conf.max_concurrency.unwrap_or(DEFAULT_MAX_CONCURRENCY));
     let runner = task::spawn(async move {
         let mut success = true;
         let mut running: Vec<Task> = Vec::new();
         let mut handles: Vec<tokio::task::JoinHandle<bool>> = Vec::new();
         for (n, s) in steps.clone().iter_mut().enumerate() {
-            if handles.len() >= opt.max_concurrency {
+            if handles.len() >= max_concurrency {
                 let (res, idx, _rem) = futures::future::select_all(&mut handles).await;
                 match res {
                     Ok(true) => {}

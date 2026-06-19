@@ -644,7 +644,15 @@ async fn main() -> Result<()> {
     for s in steps.iter() {
         tx.send(UIUpdate::Status(s.clone())).await.unwrap();
     }
-    let disable_tui = opt.disable_tui;
+    let disable_tui = {
+        use std::io::IsTerminal;
+        let mut d = opt.disable_tui;
+        if !std::io::stdout().is_terminal() {
+            d = true;
+        }
+        d
+    };
+
     let max_concurrency = opt
         .max_concurrency
         .unwrap_or(conf.max_concurrency.unwrap_or(DEFAULT_MAX_CONCURRENCY));

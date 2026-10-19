@@ -246,18 +246,18 @@ enum UIUpdate {
 
 async fn run_raw(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
     let mut status = Vec::new();
-    loop {
-        match rx.try_recv() {
-            Ok(UIUpdate::Wait) => {
+    while let Some(update) = rx.recv().await {
+        match update {
+            UIUpdate::Wait => {
                 // Waiting only makes sense in TUI mode.
             }
-            Ok(UIUpdate::AddLine(line)) => {
+            UIUpdate::AddLine(line) => {
                 println!("{line}");
             }
-            Ok(UIUpdate::Status(st)) if st.n == status.len() => {
+            UIUpdate::Status(st) if st.n == status.len() => {
                 status.push(st);
             }
-            Ok(UIUpdate::Status(st)) => {
+            UIUpdate::Status(st) => {
                 status[st.n] = st.clone();
                 let maxlen = status
                     .iter()
@@ -269,12 +269,9 @@ async fn run_raw(mut rx: mpsc::Receiver<UIUpdate>) -> Result<()> {
                     println!("  {:>maxlen$} {}", task.name, task.state);
                 }
             }
-            Err(TryRecvError::Empty) => continue,
-            Err(TryRecvError::Disconnected) => {
-                return Ok(());
-            }
         }
     }
+    Ok(())
 }
 
 /// Run the UI until the channel with UIUpdates ends.

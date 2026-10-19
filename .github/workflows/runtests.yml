@@ -1,0 +1,33 @@
+name: Run tests
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  standard:
+    runs-on: ubuntu-latest
+    name: Standard tests
+    steps:
+    - uses: actions/checkout@v6
+    - uses: dtolnay/rust-toolchain@stable
+    - name: cargo install
+      run: cargo install --locked cargo-deny tickbox
+    - name: apt-get update
+      run:  sudo apt-get update
+    - name: Run tickbox
+      run: NODIFF=true tickbox --dir extra/pre-commit --disable-tui --max-concurrency=1

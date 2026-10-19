@@ -175,63 +175,6 @@ fn sync_point(
     true
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use regex::Regex;
-
-    #[test]
-    fn sync_test() -> Result<()> {
-        let running = [
-            &Task {
-                n: 0,
-                id: 1,
-                name: "01-first".into(),
-                cmd: "".into(),
-                state: State::Pending,
-            },
-            &Task {
-                n: 1,
-                id: 2,
-                name: "02-second".into(),
-                cmd: "".into(),
-                state: State::Pending,
-            },
-        ];
-        let new = Task {
-            n: 2,
-            id: 3,
-            name: "03-third".into(),
-            cmd: "".into(),
-            state: State::Pending,
-        };
-        for (a, b, out) in [
-            (vec![], vec![], true),
-            // Test command line.
-            (vec![(0, 1)], vec![], true),
-            (vec![(0, 2)], vec![], true),
-            (vec![(0, 3)], vec![], false),
-            (vec![(0, 4)], vec![], false),
-            (vec![(1, 4)], vec![], false),
-            (vec![(2, 4)], vec![], true),
-            // Test config.
-            (vec![], vec![Regex::new("XXX")?], true),
-            (vec![], vec![Regex::new("^01-")?], true),
-            (vec![], vec![Regex::new("^0[1-2]-")?], true),
-            (vec![], vec![Regex::new("^0[1-3]-")?], false),
-            (vec![], vec![Regex::new("^0[1-4]-")?], false),
-            (vec![], vec![Regex::new("^0[2-4]-")?], true),
-        ] {
-            assert_eq!(
-                sync_point(&new, &running, &a, &b),
-                out,
-                "failed for input {a:?} {b:?} => {out}"
-            );
-        }
-        Ok(())
-    }
-}
-
 /// A UIUpdate is sent to the UI thread whenever there's any news.
 enum UIUpdate {
     /// Enable waiting when finished, even if all tasks succeed.
@@ -734,4 +677,61 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use regex::Regex;
+
+    #[test]
+    fn sync_test() -> Result<()> {
+        let running = [
+            &Task {
+                n: 0,
+                id: 1,
+                name: "01-first".into(),
+                cmd: "".into(),
+                state: State::Pending,
+            },
+            &Task {
+                n: 1,
+                id: 2,
+                name: "02-second".into(),
+                cmd: "".into(),
+                state: State::Pending,
+            },
+        ];
+        let new = Task {
+            n: 2,
+            id: 3,
+            name: "03-third".into(),
+            cmd: "".into(),
+            state: State::Pending,
+        };
+        for (a, b, out) in [
+            (vec![], vec![], true),
+            // Test command line.
+            (vec![(0, 1)], vec![], true),
+            (vec![(0, 2)], vec![], true),
+            (vec![(0, 3)], vec![], false),
+            (vec![(0, 4)], vec![], false),
+            (vec![(1, 4)], vec![], false),
+            (vec![(2, 4)], vec![], true),
+            // Test config.
+            (vec![], vec![Regex::new("XXX")?], true),
+            (vec![], vec![Regex::new("^01-")?], true),
+            (vec![], vec![Regex::new("^0[1-2]-")?], true),
+            (vec![], vec![Regex::new("^0[1-3]-")?], false),
+            (vec![], vec![Regex::new("^0[1-4]-")?], false),
+            (vec![], vec![Regex::new("^0[2-4]-")?], true),
+        ] {
+            assert_eq!(
+                sync_point(&new, &running, &a, &b),
+                out,
+                "failed for input {a:?} {b:?} => {out}"
+            );
+        }
+        Ok(())
+    }
 }
